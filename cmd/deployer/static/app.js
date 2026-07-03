@@ -111,7 +111,6 @@ const els = {
   gcpCredentials: document.getElementById("gcpCredentials"),
   secretName: document.getElementById("secretName"),
   secretKey: document.getElementById("secretKey"),
-  secretNameHint: document.getElementById("secret-name-hint"),
   secretNamePreview: document.getElementById("secret-name-preview"),
   advancedToggle: document.getElementById("advanced-toggle"),
   advancedCaret: document.getElementById("advanced-caret"),
@@ -143,6 +142,7 @@ const els = {
   integrationName: document.getElementById("integrationName"),
   integrationNameField: document.getElementById("integration-name-field"),
   integrationSecretFields: document.getElementById("integration-secret-fields"),
+  integrationSecretLabel: document.getElementById("integration-secret-label"),
   integrationSecretValue: document.getElementById("integrationSecretValue"),
   integrationSecretName: document.getElementById("integrationSecretName"),
   integrationSecretKey: document.getElementById("integrationSecretKey"),
@@ -415,23 +415,23 @@ function renderList(claws) {
     state.currentCredentialRefs = [];
   }
 
-  els.provision.textContent = state.exists ? "Update Claw YAML" : "Create OpenClaw";
+  els.provision.textContent = state.exists ? "Save changes" : "Create OpenClaw";
   renderClaws(claws);
   renderReview();
 
   if (!state.namespace) {
-    renderAlert({ kind: "idle", title: "Ready to configure", body: "Choose the namespace where your OpenClaw should run, then deploy." });
+    renderAlert({ kind: "idle", title: "Let's get started", body: "Pick the project where your OpenClaw should run — everything else follows from there." });
     return;
   }
   if (!state.exists) {
-    renderAlert({ kind: "idle", title: "Ready to deploy", body: `No OpenClaw named ${state.selectedName} is running in project ${state.namespace}.` });
+    renderAlert({ kind: "idle", title: "Ready to create", body: `${state.selectedName} doesn't exist yet in ${state.namespace}. Fill in steps 1–3, then click Create OpenClaw.` });
     return;
   }
   if (selected.ready) {
     renderAlert({
       kind: "success",
       title: `${selected.name} is ready`,
-      body: `Your OpenClaw is running in ${state.namespace}. Further customizations can be made from the OpenClaw Control UI or the Claw CR.`,
+      body: `Your OpenClaw is up and running in ${state.namespace}. Open the Control UI to start using it.`,
       link: isSafeHref(selected.gatewayURL) ? selected.gatewayURL : "",
     });
     return;
@@ -495,8 +495,8 @@ function renderClaws(claws) {
     empty.className = "empty";
     empty.innerHTML =
       '<div class="empty__icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none"><rect x="4" y="6" width="16" height="12" rx="2" stroke="var(--text-muted)" stroke-width="1.5"/><path d="M4 10h16" stroke="var(--text-muted)" stroke-width="1.5"/></svg></div>' +
-      "<h3>No OpenClaw instances</h3>" +
-      `<p>${state.namespace ? "Deploy your first instance using the form above." : "Choose a namespace to see its instances."}</p>`;
+      "<h3>No OpenClaws yet</h3>" +
+      `<p>${state.namespace ? "Fill in the form above to create your first one." : "Pick a project to see its OpenClaws."}</p>`;
     els.instancesBody.appendChild(empty);
     return;
   }
@@ -506,7 +506,7 @@ function renderClaws(claws) {
   const table = document.createElement("div");
   table.className = "table";
   table.innerHTML =
-    '<div class="table__col-head">Instance</div>' +
+    '<div class="table__col-head">OpenClaw</div>' +
     '<div class="table__col-head">Provider</div>' +
     '<div class="table__col-head">Status</div>' +
     '<div class="table__col-head right">Actions</div>';
@@ -627,7 +627,7 @@ function renderCredentialSecretHint() {
   const hint = document.getElementById("hint-secret-name");
   const code = document.createElement("code");
   code.textContent = `${key}: <value>`;
-  hint.textContent = "Applies to either choice above. Used as the key in the generated or existing Kubernetes Secret data, for example ";
+  hint.textContent = "The data key inside the Secret, for example ";
   hint.appendChild(code);
   hint.append(".");
 }
@@ -657,8 +657,31 @@ function renderIntegrationFields() {
   els.integrationChannelConfigField.hidden = !channel || kind === "channel-whatsapp" || typedChannelConfig;
   els.integrationName.placeholder = defaultIntegrationName(kind);
   els.integrationSecretKey.placeholder = defaultIntegrationSecretKey(kind);
-  els.integrationHelp.textContent = integrationHelp(kind);
+  els.integrationSecretLabel.textContent = integrationValueLabel(kind);
+  els.integrationSecretValue.placeholder = integrationValuePlaceholder(kind);
+  // Static, hand-written strings with vetted links — safe as innerHTML.
+  els.integrationHelp.innerHTML = integrationHelp(kind);
   renderTypedChannelConfigHints(kind);
+}
+
+function integrationValueLabel(kind) {
+  return {
+    "channel-telegram": "Bot token",
+    "channel-discord": "Bot token",
+    "channel-slack": "Slack bot token",
+    "github-pat": "Personal access token",
+    "auth-password": "Password",
+  }[kind] || "API key";
+}
+
+function integrationValuePlaceholder(kind) {
+  return {
+    "channel-telegram": "123456:ABC-…",
+    "channel-discord": "Paste bot token",
+    "channel-slack": "xoxb-…",
+    "github-pat": "ghp_… or github_pat_…",
+    "auth-password": "Choose a password",
+  }[kind] || "Paste API key";
 }
 
 function defaultIntegrationName(kind) {
@@ -685,20 +708,23 @@ function defaultIntegrationSecretKey(kind) {
   }[kind] || "api-key";
 }
 
+function extLink(href, label) {
+  return `<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+}
+
 function integrationHelp(kind) {
-  if (kind.startsWith("channel-")) {
-    return "Creates a spec.credentials entry with channel set; the operator infers proxy and OpenClaw channel config.";
-  }
-  if (kind.startsWith("websearch-")) {
-    return "Creates spec.webSearch using the operator-managed web search provider.";
-  }
-  if (kind === "github-pat") {
-    return "Creates spec.repoAccess.github for proxy-managed GitHub API and Git HTTPS access.";
-  }
-  if (kind === "auth-password") {
-    return "Creates spec.auth.passwordSecretRef for shared gateway password auth.";
-  }
-  return "Creates a raw spec.credentials entry for a custom domain or provider.";
+  const helps = {
+    "channel-telegram": `Chat with your OpenClaw on Telegram. Message ${extLink("https://t.me/BotFather", "@BotFather")} to create a bot and get its token.`,
+    "channel-discord": `Chat with your OpenClaw on Discord. Create a bot in the ${extLink("https://discord.com/developers/applications", "Discord Developer Portal")} and paste its token.`,
+    "channel-slack": `Chat with your OpenClaw on Slack. You'll need two tokens from your ${extLink("https://api.slack.com/apps", "Slack app")}: a bot token (xoxb-…) and an app token (xapp-…).`,
+    "github-pat": `Let your OpenClaw read and write your GitHub repositories. Paste a ${extLink("https://github.com/settings/tokens", "personal access token")}.`,
+    "websearch-brave": `Let your OpenClaw search the web. Get a free API key from ${extLink("https://brave.com/search/api/", "Brave Search API")}.`,
+    "websearch-tavily": `Let your OpenClaw search the web. Get an API key from ${extLink("https://tavily.com", "tavily.com")}.`,
+    "websearch-duckduckgo": "Let your OpenClaw search the web with DuckDuckGo. No key needed — just click Add.",
+    "websearch-gemini": "Let your OpenClaw search the web using Google Gemini. Uses your Gemini API key.",
+    "auth-password": "Protect the gateway with a shared password.",
+  };
+  return helps[kind] || "Connect a custom API by domain or provider.";
 }
 
 function renderTypedChannelConfigHints(kind) {
@@ -788,15 +814,15 @@ function renderIntegrations() {
 function integrationSummary(integration) {
   const name = integration.name || defaultIntegrationName(integration.kind);
   if (integration.kind.startsWith("websearch-")) {
-    return `spec.webSearch provider ${integration.kind.replace("websearch-", "")}`;
+    return `Web search via ${integration.kind.replace("websearch-", "")}`;
   }
   if (integration.kind === "auth-password") {
-    return `spec.auth password Secret ${integration.secretName || "created on deploy"}`;
+    return `Gateway password · ${integration.secretName || "saved on deploy"}`;
   }
   if (integration.kind === "github-pat") {
-    return `spec.repoAccess.github · ${integration.secretName || "created on deploy"}${integration.exposeEnv ? " · GH_TOKEN env" : ""}`;
+    return `GitHub access · ${integration.secretName || "token saved on deploy"}${integration.exposeEnv ? " · gh CLI env" : ""}`;
   }
-  const secret = integration.secretName || (integration.secretValue ? "created on deploy" : "no Secret");
+  const secret = integration.secretName || (integration.secretValue ? "token saved on deploy" : "no credential");
   return `${name} · ${secret}`;
 }
 
@@ -825,12 +851,12 @@ function buildIntegrationFromForm() {
     throw new Error("Custom credentials need a credential name.");
   }
   if (kind === "channel-slack" && !integration.appSecretName && !integration.appSecretValue) {
-    throw new Error("Slack needs an app token value or app token Secret name.");
+    throw new Error("Slack also needs an app token (xapp-…) — paste it below the bot token.");
   }
   const noSecret = kind === "channel-whatsapp" || kind === "websearch-duckduckgo" || kind === "websearch-gemini" ||
     (kind === "custom-credential" && integration.credentialType === "none");
   if (!noSecret && !integration.secretName && !integration.secretValue) {
-    throw new Error("Provide a pasted secret value or an existing Secret name.");
+    throw new Error(`Paste the ${integrationValueLabel(kind).toLowerCase()} for this add-on.`);
   }
   if (integration.channelConfig) {
     JSON.parse(integration.channelConfig);
@@ -959,14 +985,13 @@ function renderReview() {
     ? [...new Set(providerCredentialRefs.map((ref) => credentialRefLabel(ref)))]
     : [providerLabels[els.provider.value] || els.provider.value];
   const rows = [
-    ["Namespace", els.namespace.value.trim() || "—"],
+    ["Project", els.namespace.value.trim() || "—"],
     ["Name", els.clawName.value.trim() || "—"],
-    ["Providers", providerNames.join(", ")],
+    ["Provider", providerNames.join(", ")],
     ["Model", effectiveModel() || "—"],
-    ["Credential", credential],
-    ["Integrations", state.integrations.length ? state.integrations.map((i) => integrationLabels[i.kind] || i.kind).join(", ") : "None"],
-    ["Workspace", source === "git" ? "Git" : source === "upload" ? "Upload" : "None"],
-    ["Managed by", inferredManagement()],
+    ["API key", credential],
+    ["Add-ons", state.integrations.length ? state.integrations.map((i) => integrationLabels[i.kind] || i.kind).join(", ") : "None"],
+    ["Starting files", source === "git" ? "From Git" : source === "upload" ? "Uploaded folder" : "None"],
   ];
   els.reviewList.replaceChildren(
     ...rows.map(([k, v]) => {
@@ -989,8 +1014,10 @@ function credentialRefLabel(ref) {
 function formatCredentialRefs(refs) {
   return refs.map((ref) => {
     const label = credentialRefLabel(ref);
-    const action = ref.action === "create" ? "create " : ref.action === "existing" ? "existing " : "";
-    return `${label}: ${action}${ref.name}${ref.key ? `/${ref.key}` : ""}`;
+    if (ref.action === "create") {
+      return `${label}: new key`;
+    }
+    return `${label}: ${ref.name}${ref.key ? `/${ref.key}` : ""}`;
   }).join(", ");
 }
 
@@ -1007,19 +1034,19 @@ const errorFields = {
 function validate() {
   const vertex = isGoogleVertex();
   const errs = {};
-  if (!els.namespace.value.trim()) errs.namespace = "Namespace is required.";
-  if (!els.clawName.value.trim()) errs.clawName = "OpenClaw name is required.";
+  if (!els.namespace.value.trim()) errs.namespace = "Pick the project where your OpenClaw should run.";
+  if (!els.clawName.value.trim()) errs.clawName = "Give your OpenClaw a name.";
   const cred = (vertex ? els.gcpCredentials.value : els.apiKey.value).trim();
   const secretName = els.secretName.value.trim();
   if (!cred && !secretName && !state.exists) {
-    errs.credential = vertex ? "Service account JSON or Secret name is required." : "API key or Secret name is required.";
+    errs.credential = vertex ? "Paste your service account JSON key, or use an existing Secret." : "Paste your API key, or use an existing Secret.";
   } else if (vertex && cred && !isSupportedGCPKey(cred)) {
-    errs.credential = 'Valid JSON with type "service_account" or "authorized_user" is required.';
+    errs.credential = 'This doesn\'t look like a service account key — expected JSON with type "service_account" or "authorized_user".';
   }
   const needsGCPConfig = vertex && (!state.exists || selectedProviderCredentialSupplied());
-  if (needsGCPConfig && !els.gcpProject.value.trim()) errs.gcpProject = "GCP project is required.";
-  if (needsGCPConfig && !els.gcpLocation.value.trim()) errs.gcpLocation = "GCP region is required.";
-  if (els.filesystemSource.value === "git" && !els.gitURL.value.trim()) errs.gitURL = "Git URL is required for a Git source.";
+  if (needsGCPConfig && !els.gcpProject.value.trim()) errs.gcpProject = "Enter your GCP project ID.";
+  if (needsGCPConfig && !els.gcpLocation.value.trim()) errs.gcpLocation = "Enter a GCP region.";
+  if (els.filesystemSource.value === "git" && !els.gitURL.value.trim()) errs.gitURL = "Enter the repository URL for your starting files.";
   return errs;
 }
 
@@ -1261,8 +1288,8 @@ els.provision.addEventListener("click", async () => {
     }
     renderAlert({
       kind: "danger",
-      title: "Resolve errors before deploying",
-      body: "Some required fields need attention. Each one is marked inline below.",
+      title: "A few fields need attention",
+      body: "Each one is marked inline in the form.",
       details: Object.values(errs),
     });
     return;
@@ -1292,7 +1319,7 @@ els.provision.addEventListener("click", async () => {
 
   if (source === "upload" && els.agentFiles.files.length === 0) {
     setAdvancedOpen(true);
-    setStatus("Choose a folder to upload, or pick a different filesystem source.", true);
+    setStatus("Choose a folder to upload, or set Starting files back to None.", true);
     return;
   }
 
@@ -1307,7 +1334,7 @@ els.provision.addEventListener("click", async () => {
       configMapName = await uploadAgentFiles(namespace, name, els.agentFiles.files);
       filesystemSource = "configmap";
     }
-    setStatus(state.exists ? "Updating Claw YAML…" : "Creating OpenClaw…");
+    setStatus(state.exists ? "Saving changes…" : "Creating your OpenClaw…");
     const current = await api("/api/provision", {
       method: "POST",
       body: JSON.stringify({
@@ -1422,6 +1449,18 @@ async function uploadAgentFiles(namespace, name, fileList) {
 
 // ---------- listeners ----------
 els.themeToggle.addEventListener("click", () => applyTheme(state.theme === "dark" ? "light" : "dark"));
+
+// "Use the existing Secret" hint links open the matching Advanced disclosure.
+for (const button of document.querySelectorAll("[data-open-details]")) {
+  button.addEventListener("click", () => {
+    const details = document.getElementById(button.dataset.openDetails);
+    details.open = true;
+    const input = details.querySelector("input");
+    if (input) {
+      input.focus();
+    }
+  });
+}
 
 els.detailsToggle.addEventListener("click", () => setSectionOpen(els.detailsToggle, els.detailsBody, els.detailsCaret, els.detailsBody.hidden));
 els.providerToggle.addEventListener("click", () => setSectionOpen(els.providerToggle, els.providerBody, els.providerCaret, els.providerBody.hidden));

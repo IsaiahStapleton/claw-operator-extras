@@ -38,44 +38,44 @@
 
       <div class="page-header">
         <h1>OpenClaw Deployer</h1>
-        <p>Create and manage OpenClaw instances on OpenShift. Configure a provider, choose where it runs, then deploy.</p>
+        <p>Deploy your own OpenClaw AI assistant in a few clicks — no Kubernetes experience needed. Name it, choose an AI provider, paste your key, and create.</p>
       </div>
 
       <div class="layout">
         <section class="card">
           <form class="form" id="form" autocomplete="off">
             <div class="card__head">
-              <h2>New OpenClaw instance</h2>
+              <h2>New OpenClaw</h2>
             </div>
 
-            <!-- Section 1 · Instance details -->
+            <!-- Step 1 · Name -->
             <button type="button" class="advanced-toggle section-toggle" id="details-toggle" aria-expanded="true" aria-controls="details-body">
               <span class="section__num">1</span>
-              <h3 class="section__title">Instance details</h3>
+              <h3 class="section__title">Name your OpenClaw</h3>
               <svg class="caret open" id="details-caret" width="14" height="14" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="var(--text-muted)" stroke-width="1.6" stroke-linecap="round"/></svg>
             </button>
             <div class="section__body cols" id="details-body">
               <div class="field">
-                <label for="namespace">Namespace <span class="req">*</span></label>
+                <label for="namespace">Project <span class="req">*</span></label>
                 <input id="namespace" name="namespace" list="namespace-options" placeholder="your-claw-project" aria-describedby="hint-namespace">
                 <datalist id="namespace-options"></datalist>
-                <p class="field__hint" id="hint-namespace">OpenShift project where the Claw runs.</p>
+                <p class="field__hint" id="hint-namespace">The Kubernetes namespace where your OpenClaw will live. Start typing to see suggestions.</p>
                 <p class="field__error" id="err-namespace" hidden></p>
               </div>
               <div class="field">
-                <label for="clawName">OpenClaw name <span class="req">*</span></label>
+                <label for="clawName">Name <span class="req">*</span></label>
                 <input id="clawName" name="clawName" value="instance" aria-describedby="hint-clawName">
-                <p class="field__hint" id="hint-clawName">Resource name for this instance.</p>
+                <p class="field__hint" id="hint-clawName">Lowercase letters, numbers, and dashes — for example <code>my-assistant</code>.</p>
                 <p class="field__error" id="err-clawName" hidden></p>
               </div>
             </div>
 
             <div class="divider"></div>
 
-            <!-- Section 2 · Model provider -->
+            <!-- Step 2 · AI provider -->
             <button type="button" class="advanced-toggle section-toggle" id="provider-toggle" aria-expanded="true" aria-controls="provider-body">
               <span class="section__num">2</span>
-              <h3 class="section__title">Model Provider</h3>
+              <h3 class="section__title">Choose an AI provider</h3>
               <svg class="caret open" id="provider-caret" width="14" height="14" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="var(--text-muted)" stroke-width="1.6" stroke-linecap="round"/></svg>
             </button>
             <div class="section__body cols" id="provider-body">
@@ -90,11 +90,11 @@
                   <option value="anthropic-vertex">Google Vertex AI (Claude)</option>
                   <option value="xai">xAI</option>
                 </select>
-                <p class="field__hint">Model provider for this Claw.</p>
+                <p class="field__hint">The AI service that powers your OpenClaw. You'll paste a key for it in step 3.</p>
               </div>
               <div class="field">
-                <label for="model">Model override</label>
-                <input id="model" name="model" list="model-options" placeholder="Leave blank for provider default" aria-describedby="hint-model">
+                <label for="model">Model <span class="muted">(optional)</span></label>
+                <input id="model" name="model" list="model-options" placeholder="Leave blank for the recommended default" aria-describedby="hint-model">
                 <datalist id="model-options"></datalist>
                 <p class="field__hint" id="hint-model">Default: <code id="default-model">—</code></p>
               </div>
@@ -102,10 +102,10 @@
 
             <div class="divider"></div>
 
-            <!-- Section 3 · Model provider credential -->
+            <!-- Step 3 · API key -->
             <button type="button" class="advanced-toggle section-toggle" id="credential-toggle" aria-expanded="true" aria-controls="credential-body">
               <span class="section__num">3</span>
-              <h3 class="section__title">Model Provider credential</h3>
+              <h3 class="section__title">Add your API key</h3>
               <svg class="caret open" id="credential-caret" width="14" height="14" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="var(--text-muted)" stroke-width="1.6" stroke-linecap="round"/></svg>
             </button>
             <div class="section__body" id="credential-body">
@@ -122,120 +122,142 @@
                 </div>
               </div>
 
-              <div class="credential-choice-grid">
-                <div class="credential-choice">
-                  <div class="cred-head">
-                    <label for="apiKey"><span id="credential-label">API key</span> <span class="req">*</span></label>
-                    <a id="vertex-guide" class="guide-link" hidden href="https://github.com/redhat-et/claw-project/blob/main/docs/deployer-guide.md#one-time-setup-your-vertex-service-account" target="_blank" rel="noopener noreferrer">
-                      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.4"/><path d="M8 7.3v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="4.8" r="1" fill="currentColor"/></svg>
-                      Vertex setup guide
-                      <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 3h7v7M13 3L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                    </a>
+              <div class="field">
+                <div class="cred-head">
+                  <label for="apiKey"><span id="credential-label">API key</span> <span class="req">*</span></label>
+                  <a id="vertex-guide" class="guide-link" hidden href="https://github.com/redhat-et/claw-project/blob/main/docs/deployer-guide.md#one-time-setup-your-vertex-service-account" target="_blank" rel="noopener noreferrer">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.4"/><path d="M8 7.3v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="4.8" r="1" fill="currentColor"/></svg>
+                    Vertex setup guide
+                    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 3h7v7M13 3L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </a>
+                </div>
+                <p class="field__hint" id="vertex-help" hidden>Vertex uses a Google Cloud service account instead of an API key. Follow the one-time setup guide, then paste the JSON key below.</p>
+                <p class="field__hint">Key already stored in a Kubernetes Secret? <button type="button" class="hint-link" data-open-details="credential-advanced">Use the existing Secret</button> instead — no need to paste it again.</p>
+                <input id="apiKey" name="apiKey" type="password" spellcheck="false" placeholder="Paste your API key" aria-describedby="hint-credential">
+                <textarea id="gcpCredentials" name="gcpCredentials" rows="5" spellcheck="false" placeholder="Paste your service account JSON key" hidden></textarea>
+                <p class="field__hint lock" id="hint-credential">
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 7V5a4 4 0 0 1 8 0v2" stroke="currentColor" stroke-width="1.4"/><rect x="3" y="7" width="10" height="6.5" rx="1.5" stroke="currentColor" stroke-width="1.4"/></svg>
+                  Stored securely in your project. Never shown again after you deploy.
+                </p>
+                <p class="field__error" id="err-credential" hidden></p>
+              </div>
+
+              <details class="advanced-details" id="credential-advanced">
+                <summary>Advanced: use an existing Kubernetes Secret</summary>
+                <div class="advanced-details__body">
+                  <p class="field__hint">Referencing an existing Secret? Leave the key field above blank — a pasted key is written into this Secret and replaces its current value.</p>
+                  <div class="cols-2">
+                    <div class="field">
+                      <label for="secretName">Existing Secret name</label>
+                      <input id="secretName" name="secretName" placeholder="existing-provider-secret">
+                      <p class="field__hint">Reference a Secret already in the project instead of pasting a key. Leave blank to create <code id="secret-name-preview"></code>.</p>
+                    </div>
+                    <div class="field">
+                      <label for="secretKey">Secret key</label>
+                      <input id="secretKey" name="secretKey" placeholder="api-key" aria-describedby="hint-secret-name">
+                      <p class="field__hint" id="hint-secret-name"></p>
+                    </div>
                   </div>
-                  <p class="field__hint" id="vertex-help" hidden>A one-time setup is required to create the service account. Follow the guide, then paste the JSON key below.</p>
-                  <input id="apiKey" name="apiKey" type="password" spellcheck="false" placeholder="Paste provider key" aria-describedby="hint-credential">
-                  <textarea id="gcpCredentials" name="gcpCredentials" rows="5" spellcheck="false" placeholder="Paste your service account JSON key" hidden></textarea>
-                  <p class="field__hint lock" id="hint-credential">
-                    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 7V5a4 4 0 0 1 8 0v2" stroke="currentColor" stroke-width="1.4"/><rect x="3" y="7" width="10" height="6.5" rx="1.5" stroke="currentColor" stroke-width="1.4"/></svg>
-                    Stored as a Kubernetes Secret. Never displayed after deploy.
-                  </p>
-                  <p class="field__hint" id="secret-name-hint">Creates Secret: <code id="secret-name-preview"></code></p>
                 </div>
-                <div class="credential-choice-or" aria-hidden="true">OR</div>
-                <div class="credential-choice">
-                  <label for="secretName">Existing Kubernetes Secret name</label>
-                  <input id="secretName" name="secretName" placeholder="existing-provider-secret" aria-describedby="hint-secret-name">
-                  <p class="field__hint">Reference a Secret that already exists in the selected namespace.</p>
-                </div>
-              </div>
-              <div class="field credential-secret-key">
-                <label for="secretKey">Kubernetes Secret key</label>
-                <input id="secretKey" name="secretKey" placeholder="api-key" aria-describedby="hint-secret-name">
-                <p class="field__hint" id="hint-secret-name">Applies to either choice above. Used as the key in the generated or existing Kubernetes Secret data, for example <code>api-key: &lt;value&gt;</code>.</p>
-              </div>
-              <p class="field__error" id="err-credential" hidden></p>
+              </details>
             </div>
 
             <div class="divider"></div>
 
-            <!-- Section 4 · Operator integrations -->
+            <!-- Step 4 · Apps & tools -->
             <button type="button" class="advanced-toggle" id="integration-toggle" aria-expanded="false" aria-controls="integration-body">
               <span class="section__num">4</span>
-              <h3 class="section__title">Operator integrations <span class="optional">· optional</span></h3>
+              <h3 class="section__title">Connect apps &amp; tools <span class="optional">· optional</span></h3>
               <svg class="caret" id="integration-caret" width="14" height="14" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="var(--text-muted)" stroke-width="1.6" stroke-linecap="round"/></svg>
             </button>
             <div class="section__body advanced-body" id="integration-body" hidden>
+              <p class="field__hint">Let your OpenClaw chat with you on messaging apps, search the web, or work with GitHub. You can add these later, too.</p>
               <div class="integration-builder">
                 <div class="section__body cols integration-builder__cols">
                   <div class="field">
-                    <label for="integrationType">Integration</label>
+                    <label for="integrationType">Add-on</label>
                     <select id="integrationType" name="integrationType">
-                      <option value="channel-telegram">Telegram channel</option>
-                      <option value="channel-discord">Discord channel</option>
-                      <option value="channel-slack">Slack channel</option>
-                      <option value="github-pat">GitHub PAT</option>
-                      <option value="websearch-brave">Brave web search</option>
-                      <option value="websearch-tavily">Tavily web search</option>
-                      <option value="websearch-duckduckgo">DuckDuckGo web search</option>
-                      <option value="websearch-gemini">Gemini web search</option>
+                      <option value="channel-telegram">Telegram</option>
+                      <option value="channel-discord">Discord</option>
+                      <option value="channel-slack">Slack</option>
+                      <option value="github-pat">GitHub access</option>
+                      <option value="websearch-brave">Web search — Brave</option>
+                      <option value="websearch-tavily">Web search — Tavily</option>
+                      <option value="websearch-duckduckgo">Web search — DuckDuckGo (no key needed)</option>
+                      <option value="websearch-gemini">Web search — Gemini</option>
                     </select>
-                    <p class="field__hint" id="integration-help">Maps directly to the operator's Claw spec.</p>
-                  </div>
-                  <div class="field" id="integration-name-field">
-                    <label for="integrationName">OpenClaw credential name</label>
-                    <input id="integrationName" name="integrationName" placeholder="telegram">
-                    <p class="field__hint">Optional for built-in integrations; required for custom credentials.</p>
+                    <p class="field__hint" id="integration-help"></p>
                   </div>
                 </div>
 
                 <div class="section__body integration-secret-fields" id="integration-secret-fields">
-                  <div class="credential-choice-grid">
-                    <div class="credential-choice">
-                      <label for="integrationSecretValue">Paste secret value</label>
-                      <input id="integrationSecretValue" name="integrationSecretValue" type="password" spellcheck="false" placeholder="Paste token or API key">
-                      <p class="field__hint">Creates a Kubernetes Secret for this integration.</p>
-                    </div>
-                    <div class="credential-choice-or" aria-hidden="true">OR</div>
-                    <div class="credential-choice">
-                      <label for="integrationSecretName">Existing Kubernetes Secret name</label>
-                      <input id="integrationSecretName" name="integrationSecretName" placeholder="my-secret">
-                      <p class="field__hint">Reference a Secret that already exists in the selected namespace.</p>
-                    </div>
+                  <div class="field">
+                    <label for="integrationSecretValue" id="integration-secret-label">Token or API key</label>
+                    <p class="field__hint">Already stored in a Kubernetes Secret? <button type="button" class="hint-link" data-open-details="integration-secret-advanced">Use the existing Secret</button>.</p>
+                    <input id="integrationSecretValue" name="integrationSecretValue" type="password" spellcheck="false" placeholder="Paste token or API key">
+                    <p class="field__hint lock">
+                      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 7V5a4 4 0 0 1 8 0v2" stroke="currentColor" stroke-width="1.4"/><rect x="3" y="7" width="10" height="6.5" rx="1.5" stroke="currentColor" stroke-width="1.4"/></svg>
+                      Stored securely in your project.
+                    </p>
                   </div>
-                  <div class="field credential-secret-key">
-                    <label for="integrationSecretKey">Kubernetes Secret key</label>
-                    <input id="integrationSecretKey" name="integrationSecretKey" placeholder="api-key">
-                    <p class="field__hint">Applies to either choice above. Pasted values are stored in a Kubernetes Secret, then referenced by SecretRef.</p>
-                  </div>
+                  <details class="advanced-details" id="integration-secret-advanced">
+                    <summary>Advanced: use an existing Kubernetes Secret</summary>
+                    <div class="advanced-details__body">
+                      <p class="field__hint">Referencing an existing Secret? Leave the token field above blank — a pasted value is written into this Secret and replaces its current value.</p>
+                      <div class="cols-2">
+                        <div class="field" id="integration-name-field">
+                          <label for="integrationName">Credential name</label>
+                          <input id="integrationName" name="integrationName" placeholder="telegram">
+                          <p class="field__hint">Optional; a sensible default is used.</p>
+                        </div>
+                        <div class="field">
+                          <label for="integrationSecretName">Existing Secret name</label>
+                          <input id="integrationSecretName" name="integrationSecretName" placeholder="my-secret">
+                          <p class="field__hint">Reference a Secret already in the project instead of pasting a value.</p>
+                        </div>
+                        <div class="field">
+                          <label for="integrationSecretKey">Secret key</label>
+                          <input id="integrationSecretKey" name="integrationSecretKey" placeholder="api-key">
+                          <p class="field__hint">The data key inside the Secret.</p>
+                        </div>
+                      </div>
+                    </div>
+                  </details>
                 </div>
 
                 <div class="section__body" id="integration-github-fields" hidden>
                   <label class="checkbox-field">
                     <input id="integrationExposeEnv" name="integrationExposeEnv" type="checkbox">
-                    <span>Expose as <code>GH_TOKEN</code> and <code>GITHUB_TOKEN</code> for the <code>gh</code> CLI</span>
+                    <span>Also expose the token as <code>GH_TOKEN</code> and <code>GITHUB_TOKEN</code> for the <code>gh</code> CLI</span>
                   </label>
-                  <p class="field__hint">Leave off for proxy-managed Git HTTPS and GitHub API access.</p>
+                  <p class="field__hint">Leave off unless you know you need it — GitHub and Git access work without it.</p>
                 </div>
 
                 <div class="section__body" id="integration-slack-fields" hidden>
-                  <div class="credential-choice-grid">
-                    <div class="credential-choice">
-                      <label for="integrationAppSecretValue">Slack app token</label>
-                      <input id="integrationAppSecretValue" name="integrationAppSecretValue" type="password" spellcheck="false" placeholder="xapp-...">
-                      <p class="field__hint">Creates or updates the app-token entry for Slack.</p>
-                    </div>
-                    <div class="credential-choice-or" aria-hidden="true">OR</div>
-                    <div class="credential-choice">
-                      <label for="integrationAppSecretName">Existing Kubernetes Secret name</label>
-                      <input id="integrationAppSecretName" name="integrationAppSecretName" placeholder="slack-tokens">
-                      <p class="field__hint">Reference a Secret that already exists in the selected namespace.</p>
-                    </div>
+                  <div class="field">
+                    <label for="integrationAppSecretValue">Slack app token</label>
+                    <p class="field__hint">Already stored in a Kubernetes Secret? <button type="button" class="hint-link" data-open-details="integration-app-secret-advanced">Use the existing Secret</button>.</p>
+                    <input id="integrationAppSecretValue" name="integrationAppSecretValue" type="password" spellcheck="false" placeholder="xapp-...">
+                    <p class="field__hint">The app-level token from your Slack app's Basic Information page.</p>
                   </div>
-                  <div class="field credential-secret-key">
-                    <label for="integrationAppSecretKey">App token Kubernetes Secret key</label>
-                    <input id="integrationAppSecretKey" name="integrationAppSecretKey" placeholder="app-token">
-                    <p class="field__hint">Applies to either choice above. Pasted app tokens are stored in a Kubernetes Secret, then referenced by SecretRef.</p>
-                  </div>
+                  <details class="advanced-details" id="integration-app-secret-advanced">
+                    <summary>Advanced: use an existing Kubernetes Secret for the app token</summary>
+                    <div class="advanced-details__body">
+                      <p class="field__hint">Referencing an existing Secret? Leave the app token field above blank — a pasted value is written into this Secret and replaces its current value.</p>
+                      <div class="cols-2">
+                        <div class="field">
+                          <label for="integrationAppSecretName">Existing Secret name</label>
+                          <input id="integrationAppSecretName" name="integrationAppSecretName" placeholder="slack-tokens">
+                          <p class="field__hint">Reference a Secret already in the project instead of pasting a value.</p>
+                        </div>
+                        <div class="field">
+                          <label for="integrationAppSecretKey">Secret key</label>
+                          <input id="integrationAppSecretKey" name="integrationAppSecretKey" placeholder="app-token">
+                          <p class="field__hint">The data key inside the Secret.</p>
+                        </div>
+                      </div>
+                    </div>
+                  </details>
                 </div>
 
                 <div class="section__body cols" id="integration-custom-fields" hidden>
@@ -275,32 +297,37 @@
 
                 <div class="section__body cols" id="integration-typed-channel-config-field" hidden>
                   <div class="field">
-                    <label for="integrationDmPolicy">DM policy</label>
+                    <label for="integrationDmPolicy">Who can message it?</label>
                     <select id="integrationDmPolicy" name="integrationDmPolicy">
-                      <option value="">Use operator default</option>
-                      <option value="open">Open</option>
-                      <option value="allowlist">Allowlist</option>
-                      <option value="pairing">Pairing</option>
-                      <option value="disabled">Disabled</option>
+                      <option value="">Default</option>
+                      <option value="open">Open — anyone</option>
+                      <option value="allowlist">Allowlist — only people you list</option>
+                      <option value="pairing">Pairing — approve each person once</option>
+                      <option value="disabled">Disabled — no direct messages</option>
                     </select>
                     <p class="field__hint" id="integration-dm-policy-hint">Controls direct-message access for this channel.</p>
                   </div>
                   <div class="field">
-                    <label for="integrationAllowFrom">Allowed DM senders</label>
+                    <label for="integrationAllowFrom">Allowed senders</label>
                     <input id="integrationAllowFrom" name="integrationAllowFrom" placeholder="*">
                     <p class="field__hint" id="integration-allow-from-hint">Comma-separated sender IDs, or <code>*</code> for everyone when policy is Open.</p>
                   </div>
                 </div>
 
                 <div class="section__body" id="integration-channel-config-field">
-                  <div class="field">
-                    <label for="integrationChannelConfig">Channel config JSON <span class="muted">(optional)</span></label>
-                    <textarea id="integrationChannelConfig" name="integrationChannelConfig" rows="3" spellcheck="false" placeholder='{"dmPolicy":"allowlist","allowFrom":["12345"]}'></textarea>
-                  </div>
+                  <details class="advanced-details">
+                    <summary>Advanced: channel config JSON</summary>
+                    <div class="advanced-details__body">
+                      <div class="field">
+                        <label for="integrationChannelConfig">Channel config JSON <span class="muted">(optional)</span></label>
+                        <textarea id="integrationChannelConfig" name="integrationChannelConfig" rows="3" spellcheck="false" placeholder='{"dmPolicy":"allowlist","allowFrom":["12345"]}'></textarea>
+                      </div>
+                    </div>
+                  </details>
                 </div>
 
                 <div class="integration-actions">
-                  <button type="button" id="integration-add" class="btn">Add integration</button>
+                  <button type="button" id="integration-add" class="btn">Add</button>
                 </div>
               </div>
               <div class="integration-list" id="integration-list"></div>
@@ -308,23 +335,23 @@
 
             <div class="divider"></div>
 
-            <!-- Section 5 · Workspace source (optional / advanced) -->
+            <!-- Step 5 · Starting files (optional / advanced) -->
             <button type="button" class="advanced-toggle" id="advanced-toggle" aria-expanded="false" aria-controls="advanced-body">
               <span class="section__num">5</span>
-              <h3 class="section__title">Workspace source <span class="optional">· optional</span></h3>
+              <h3 class="section__title">Starting files <span class="optional">· optional</span></h3>
               <svg class="caret" id="advanced-caret" width="14" height="14" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="var(--text-muted)" stroke-width="1.6" stroke-linecap="round"/></svg>
             </button>
             <div class="advanced-body" id="advanced-body" hidden>
               <div class="field">
-                <label for="filesystemSource">OpenClaw workspace source</label>
+                <label for="filesystemSource">Seed your OpenClaw with starting files</label>
                 <select id="filesystemSource" name="filesystemSource" style="max-width:320px;">
-                  <option value="">None</option>
-                  <option value="git">Git repository</option>
+                  <option value="">None — start fresh</option>
+                  <option value="git">From a Git repository</option>
                   <option value="upload">Upload a folder</option>
                 </select>
-                <p class="field__hint" id="filesystem-source-hint">Optionally seed the OpenClaw workspace on first boot from a Git repository or an uploaded folder. Selecting a source switches the instance to user-managed config.</p>
+                <p class="field__hint" id="filesystem-source-hint">Give your OpenClaw starting instructions, memory, or skills. Most people skip this — you can always add files later from inside the running OpenClaw.</p>
                 <details class="field__hint" id="workspace-source-help" hidden>
-                  <summary>What to provide</summary>
+                  <summary>What can these files contain?</summary>
                   <p>A directory tree that seeds the Claw's OpenClaw home (<code>~/.openclaw</code>, on its persistent volume). It is applied once on first boot; edits made later inside the running Claw are preserved.</p>
                   <ul>
                     <li><code>workspace-main/</code> → the agent workspace (<code>~/.openclaw/workspace/</code>): e.g. <code>AGENTS.md</code>, <code>SOUL.md</code>, <code>memory/</code>, <code>skills/</code></li>
@@ -337,41 +364,44 @@
               </div>
               <div class="source-box" id="git-box" hidden>
                 <div class="field">
-                  <label for="gitURL">Git URL <span class="req">*</span></label>
+                  <label for="gitURL">Repository URL <span class="req">*</span></label>
                   <input id="gitURL" name="gitURL" placeholder="https://github.com/org/repo.git">
                   <p class="field__error" id="err-gitURL" hidden></p>
                 </div>
                 <div class="git-cols">
                   <div class="field">
-                    <label for="gitRef">Git ref <span class="muted">(optional)</span></label>
+                    <label for="gitRef">Branch or tag <span class="muted">(optional)</span></label>
                     <input id="gitRef" name="gitRef" placeholder="main">
                   </div>
                   <div class="field">
-                    <label for="gitPath">Path in repo <span class="muted">(optional)</span></label>
+                    <label for="gitPath">Folder in the repo <span class="muted">(optional)</span></label>
                     <input id="gitPath" name="gitPath" placeholder="agents/">
                   </div>
                 </div>
-                <div class="git-cols">
-                  <div class="field">
-                    <label for="gitSecretName">Git credentials Secret name <span class="muted">(optional)</span></label>
-                    <input id="gitSecretName" name="gitSecretName" placeholder="git-credentials">
-                    <p class="field__hint">Creates or references <code>spec.agentFiles.git.secretRef.name</code>. The Secret must contain <code>username</code> and <code>password</code>.</p>
+                <details class="advanced-details">
+                  <summary>Private repository? Add credentials</summary>
+                  <div class="advanced-details__body git-cols">
+                    <div class="field">
+                      <label for="gitUsername">Git username</label>
+                      <input id="gitUsername" name="gitUsername" placeholder="git">
+                      <p class="field__hint">For GitHub PATs, use your GitHub username or <code>x-access-token</code>.</p>
+                    </div>
+                    <div class="field">
+                      <label for="gitPassword">GitHub PAT or Git password</label>
+                      <input id="gitPassword" name="gitPassword" type="password" spellcheck="false" placeholder="Paste GitHub PAT">
+                      <p class="field__hint">Stored securely in your project.</p>
+                    </div>
+                    <div class="field">
+                      <label for="gitSecretName">Existing Secret name <span class="muted">(optional)</span></label>
+                      <input id="gitSecretName" name="gitSecretName" placeholder="git-credentials">
+                      <p class="field__hint">Reference a Secret with <code>username</code> and <code>password</code> keys instead of pasting. If you also paste credentials, they are written into this Secret.</p>
+                    </div>
                   </div>
-                  <div class="field">
-                    <label for="gitUsername">Git username <span class="muted">(optional)</span></label>
-                    <input id="gitUsername" name="gitUsername" placeholder="git">
-                    <p class="field__hint">For GitHub PATs, use your GitHub username or <code>x-access-token</code>.</p>
-                  </div>
-                  <div class="field">
-                    <label for="gitPassword">GitHub PAT or Git password <span class="muted">(optional)</span></label>
-                    <input id="gitPassword" name="gitPassword" type="password" spellcheck="false" placeholder="Paste GitHub PAT">
-                    <p class="field__hint">Stored as the Secret <code>password</code> key when pasted.</p>
-                  </div>
-                </div>
+                </details>
               </div>
               <div class="source-box" id="upload-box" hidden>
                 <div class="field">
-                  <label for="agentFiles">Folder to seed</label>
+                  <label for="agentFiles">Folder to upload</label>
                   <input id="agentFiles" name="agentFiles" type="file" webkitdirectory multiple>
                   <p class="field__hint">Pick a folder (for example with <code>workspace-main/</code>, <code>skills/</code>, <code>openclaw.json</code>). It is packaged and uploaded on Create.</p>
                   <p class="upload-ok" id="upload-name" hidden></p>
@@ -385,7 +415,7 @@
               <button type="button" id="reset" class="btn">Reset</button>
               <button type="button" id="preview-open" class="btn btn--link btn--manifest">
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 2.5h7l3 3V13a.5.5 0 0 1-.5.5h-9A.5.5 0 0 1 3 13z" stroke="currentColor" stroke-width="1.3"/><path d="M9.5 2.5v3.5H13" stroke="currentColor" stroke-width="1.3"/></svg>
-                Preview manifest
+                View YAML
               </button>
             </div>
           </form>
@@ -394,7 +424,7 @@
         <aside class="aside">
           <div class="alert alert--info" id="alert" role="status" aria-live="polite"></div>
           <div class="review">
-            <div class="review__head"><h3>Review</h3></div>
+            <div class="review__head"><h3>Summary</h3></div>
             <dl id="review-list"></dl>
           </div>
         </aside>
@@ -402,7 +432,7 @@
 
       <section class="instances" id="instances">
         <div class="instances__head">
-          <h2>OpenClaw instances</h2>
+          <h2>Your OpenClaws</h2>
           <span class="count-badge" id="instances-count">0</span>
         </div>
         <div id="instances-body"></div>
@@ -410,9 +440,9 @@
     </main>
 
     <div class="modal-overlay" id="preview-overlay" hidden>
-      <div class="modal" role="dialog" aria-modal="true" aria-label="Manifest preview" id="preview-dialog">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="YAML preview" id="preview-dialog">
         <div class="modal__head">
-          <h3>Manifest preview · Claw</h3>
+          <h3>YAML preview · Claw</h3>
           <button type="button" class="modal__close" id="preview-close" aria-label="Close">×</button>
         </div>
         <div class="modal__body"><pre id="preview-yaml"></pre></div>
