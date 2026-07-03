@@ -49,17 +49,18 @@ type userIdentity struct {
 }
 
 type provisionRequest struct {
-	Namespace   string `json:"namespace"`
-	Name        string `json:"name"`
-	AgentName   string `json:"agentName"`
-	Model       string `json:"model"`
-	Provider    string `json:"provider"`
-	APIKey      string `json:"apiKey"`
-	SecretName  string `json:"secretName"`
-	SecretKey   string `json:"secretKey"`
-	GCPProject  string `json:"gcpProject"`
-	GCPLocation string `json:"gcpLocation"`
-	Management  string `json:"management"`
+	Namespace      string `json:"namespace"`
+	Name           string `json:"name"`
+	AgentName      string `json:"agentName"`
+	Model          string `json:"model"`
+	Provider       string `json:"provider"`
+	ConfigureAgent bool   `json:"configureAgent"`
+	APIKey         string `json:"apiKey"`
+	SecretName     string `json:"secretName"`
+	SecretKey      string `json:"secretKey"`
+	GCPProject     string `json:"gcpProject"`
+	GCPLocation    string `json:"gcpLocation"`
+	Management     string `json:"management"`
 
 	// FilesystemSource seeds the Claw filesystem from a Git repository or a
 	// ConfigMap. It maps to spec.agentFiles and is only honored by the operator
@@ -74,7 +75,8 @@ type provisionRequest struct {
 	ConfigMapName    string `json:"configMapName"`
 	ConfigMapKey     string `json:"configMapKey"`
 
-	Integrations []integrationRequest `json:"integrations"`
+	Integrations        []integrationRequest `json:"integrations"`
+	RemovedIntegrations []integrationRequest `json:"removedIntegrations"`
 }
 
 type integrationRequest struct {
@@ -102,6 +104,7 @@ type integrationRequest struct {
 	OAuthTokenURL  string `json:"oauthTokenURL"`
 	OAuthScopes    string `json:"oauthScopes"`
 	ChannelConfig  string `json:"channelConfig"`
+	ExposeEnv      bool   `json:"exposeEnv"`
 }
 
 type meResponse struct {

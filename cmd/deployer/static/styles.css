@@ -494,6 +494,18 @@ code {
   gap: 6px;
 }
 
+.checkbox-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: var(--text);
+  font-weight: 650;
+}
+
+.checkbox-field input {
+  margin-top: 3px;
+}
+
 .or-divider {
   display: flex;
   align-items: center;

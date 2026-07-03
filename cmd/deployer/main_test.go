@@ -280,10 +280,15 @@ func TestCredentialSecretNamesIncludesTopLevelSecretRefs(t *testing.T) {
 					"secretRef": map[string]any{"name": "git-secret"},
 				},
 			},
+			"repoAccess": map[string]any{
+				"github": map[string]any{
+					"secretRef": map[string]any{"name": "github-secret", "key": "token"},
+				},
+			},
 		},
 	}
 
-	assert.ElementsMatch(t, []string{"provider-secret", "brave-secret", "password-secret", "git-secret"}, credentialSecretNames(claw))
+	assert.ElementsMatch(t, []string{"provider-secret", "brave-secret", "password-secret", "git-secret", "github-secret"}, credentialSecretNames(claw))
 }
 
 func TestHandleDeleteRemovesLabeledManagedSecrets(t *testing.T) {
@@ -388,6 +393,50 @@ func TestHandleProvisionWithSecretNameSkipsSecretApply(t *testing.T) {
 	secretRef := secretRefs[0].(map[string]any)
 	assert.Equal(t, "existing-openai-key", secretRef["name"])
 	assert.Equal(t, "OPENAI_API_KEY", secretRef["key"])
+}
+
+func TestHandleProvisionExistingClawSkipsGCPValidationWithoutCredentialInput(t *testing.T) {
+	clawApplied := false
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			statusCode := http.StatusOK
+			body := `{}`
+			if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/claws/instance") {
+				body = `{
+					"metadata": {"namespace": "sallyom-claw", "name": "instance"},
+					"spec": {
+						"credentials": [{
+							"name": "openai",
+							"provider": "openai",
+							"secretRef": [{"name": "existing-openai-key", "key": "api-key"}]
+						}]
+					}
+				}`
+			}
+			if r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/claws/instance") {
+				clawApplied = true
+			}
+			return &http.Response{
+				StatusCode: statusCode,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		}),
+	}
+	s := &server{
+		apiServer:   "https://kubernetes.example.test",
+		bearerToken: "service-account-token",
+		client:      client,
+	}
+	body := `{"namespace":"sallyom-claw","name":"instance","provider":"google-vertex","integrations":[{"kind":"github-pat","secretName":"github-token"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/provision", strings.NewReader(body))
+	req.Header.Set("X-Forwarded-User", "sallyom")
+	rec := httptest.NewRecorder()
+
+	s.handleProvision(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.True(t, clawApplied)
 }
 
 func TestHandleDeleteUsesRequestedNamespace(t *testing.T) {
@@ -655,10 +704,11 @@ func TestApplyClawWithoutModelSetsAgentNameOnly(t *testing.T) {
 		client:      client,
 	}
 	req := provisionRequest{
-		Namespace: "sallyom-claw",
-		Name:      "instance",
-		Provider:  "google",
-		AgentName: "Instance",
+		Namespace:      "sallyom-claw",
+		Name:           "instance",
+		Provider:       "google",
+		ConfigureAgent: true,
+		AgentName:      "Instance",
 	}
 
 	require.NoError(t, s.applyClaw(context.Background(), userIdentity{}, req))
@@ -1069,6 +1119,60 @@ func TestApplyClawPreservesCredentialsWithoutCredentialInput(t *testing.T) {
 	assert.Equal(t, "existing-openai-key", secretRef["name"])
 }
 
+func TestApplyClawPreservesAgentConfigWithoutConfigureAgent(t *testing.T) {
+	var applied map[string]any
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if r.Method == http.MethodGet {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body: io.NopCloser(strings.NewReader(`{
+						"metadata": {"name": "instance"},
+						"spec": {
+							"config": {
+								"raw": {
+									"agents": {
+										"defaults": {
+											"model": {"primary": "openai/gpt-5.5"}
+										}
+									}
+								}
+							},
+							"credentials": [{
+								"name": "openai",
+								"provider": "openai",
+								"secretRef": [{"name": "existing-openai-key", "key": "api-key"}]
+							}]
+						}
+					}`)),
+				}, nil
+			}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&applied))
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{}`)),
+			}, nil
+		}),
+	}
+	s := &server{apiServer: "https://kubernetes.example.test", bearerToken: "t", client: client}
+	req := provisionRequest{
+		Namespace:  "sallyom-claw",
+		Name:       "instance",
+		Provider:   "openrouter",
+		Management: "operator",
+		Integrations: []integrationRequest{{
+			Kind:       "github-pat",
+			SecretName: "github-token",
+		}},
+	}
+
+	require.NoError(t, s.applyClaw(context.Background(), userIdentity{}, req))
+	model, _, _ := nestedString(applied, "spec", "config", "raw", "agents", "defaults", "model", "primary")
+	assert.Equal(t, "openai/gpt-5.5", model)
+}
+
 func TestApplyClawAddsTelegramIntegration(t *testing.T) {
 	var applied map[string]any
 	client := &http.Client{
@@ -1119,28 +1223,60 @@ func TestIntegrationSecretKeyDefaultsSlackToBotToken(t *testing.T) {
 	assert.Equal(t, "custom-key", integrationSecretKey(integrationRequest{Kind: "channel-slack", SecretKey: "custom-key"}))
 }
 
-func TestApplyIntegrationsAddsGitHubPATCredential(t *testing.T) {
-	credentials, _, _, err := applyIntegrationsToSpec(nil, provisionRequest{
+func TestApplyIntegrationsAddsGitHubRepoAccess(t *testing.T) {
+	credentials, _, _, repoAccess, err := applyIntegrationsToSpec(nil, provisionRequest{
 		Name: "instance",
 		Integrations: []integrationRequest{{
 			Kind:        "github-pat",
 			SecretValue: "ghp_secret",
+			ExposeEnv:   true,
 		}},
 	})
 
 	require.NoError(t, err)
-	require.Len(t, credentials, 1)
-	github := credentials[0].(map[string]any)
-	assert.Equal(t, "github", github["name"])
-	assert.Equal(t, "bearer", github["type"])
-	assert.Equal(t, "api.github.com", github["domain"])
-	refs := github["secretRef"].([]map[string]string)
-	require.Len(t, refs, 1)
-	assert.Equal(t, "openclaw-instance-github-pat", refs[0]["name"])
-	assert.Equal(t, "token", refs[0]["key"])
+	assert.Empty(t, credentials)
+	github := repoAccess["github"].(map[string]any)
+	ref := github["secretRef"].(map[string]any)
+	assert.Equal(t, "openclaw-instance-github-pat", ref["name"])
+	assert.Equal(t, "token", ref["key"])
+	assert.Equal(t, true, github["enableApiProxy"])
+	assert.Equal(t, true, github["enableGitHttps"])
+	assert.Equal(t, true, github["exposeEnv"])
 }
 
-func TestApplyIntegrationsRemovesAbsentManagedCredentials(t *testing.T) {
+func TestApplyIntegrationsMigratesDeployerGitHubCredentialToRepoAccess(t *testing.T) {
+	credentials := []any{
+		map[string]any{
+			"name":   "github",
+			"type":   "bearer",
+			"domain": "api.github.com",
+			"secretRef": []any{
+				map[string]any{"name": "openclaw-instance-github-pat", "key": "token"},
+			},
+		},
+		map[string]any{
+			"name":     "openai",
+			"provider": "openai",
+		},
+	}
+
+	next, _, _, repoAccess, err := applyIntegrationsToSpec(credentials, provisionRequest{
+		Name: "instance",
+		Integrations: []integrationRequest{{
+			Kind:       "github-pat",
+			SecretName: "github-token",
+		}},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, next, 1)
+	assert.Equal(t, "openai", next[0].(map[string]any)["name"])
+	ref := repoAccess["github"].(map[string]any)["secretRef"].(map[string]any)
+	assert.Equal(t, "github-token", ref["name"])
+	assert.Equal(t, "token", ref["key"])
+}
+
+func TestApplyIntegrationsPreservesAbsentManagedCredentials(t *testing.T) {
 	credentials := []any{
 		map[string]any{
 			"name":      "telegram",
@@ -1153,6 +1289,14 @@ func TestApplyIntegrationsRemovesAbsentManagedCredentials(t *testing.T) {
 			"secretRef": []any{map[string]any{"name": "openclaw-instance-custom-api", "key": "api-key"}},
 		},
 		map[string]any{
+			"name":   "github",
+			"type":   "bearer",
+			"domain": "api.github.com",
+			"secretRef": []any{
+				map[string]any{"name": "openclaw-instance-github-pat", "key": "token"},
+			},
+		},
+		map[string]any{
 			"name":      "work-telegram",
 			"channel":   "telegram",
 			"secretRef": []any{map[string]any{"name": "team-owned-secret", "key": "bot-token"}},
@@ -1163,7 +1307,7 @@ func TestApplyIntegrationsRemovesAbsentManagedCredentials(t *testing.T) {
 		},
 	}
 
-	next, _, _, err := applyIntegrationsToSpec(credentials, provisionRequest{
+	next, _, _, _, err := applyIntegrationsToSpec(credentials, provisionRequest{
 		Name: "instance",
 		Integrations: []integrationRequest{{
 			Kind:       "channel-slack",
@@ -1178,10 +1322,50 @@ func TestApplyIntegrationsRemovesAbsentManagedCredentials(t *testing.T) {
 		name, _ := credentialMap["name"].(string)
 		names = append(names, name)
 	}
-	assert.ElementsMatch(t, []string{"work-telegram", "openai", "slack"}, names)
+	assert.ElementsMatch(t, []string{"telegram", "custom-api", "github", "work-telegram", "openai", "slack"}, names)
 }
 
-func TestApplyClawRemovesAbsentManagedTopLevelIntegrations(t *testing.T) {
+func TestApplyIntegrationsRemovesExplicitManagedCredentials(t *testing.T) {
+	credentials := []any{
+		map[string]any{
+			"name":      "telegram",
+			"channel":   "telegram",
+			"secretRef": []any{map[string]any{"name": "openclaw-instance-telegram-bot-token", "key": "bot-token"}},
+		},
+		map[string]any{
+			"name":   "github",
+			"type":   "bearer",
+			"domain": "api.github.com",
+			"secretRef": []any{
+				map[string]any{"name": "openclaw-instance-github-pat", "key": "token"},
+			},
+		},
+		map[string]any{
+			"name":      "work-telegram",
+			"channel":   "telegram",
+			"secretRef": []any{map[string]any{"name": "team-owned-secret", "key": "bot-token"}},
+		},
+	}
+
+	next, _, _, _, err := applyIntegrationsToSpec(credentials, provisionRequest{
+		Name: "instance",
+		RemovedIntegrations: []integrationRequest{
+			{Kind: "channel-telegram"},
+			{Kind: "github-pat"},
+		},
+	})
+
+	require.NoError(t, err)
+	names := []string{}
+	for _, credential := range next {
+		credentialMap := credential.(map[string]any)
+		name, _ := credentialMap["name"].(string)
+		names = append(names, name)
+	}
+	assert.ElementsMatch(t, []string{"work-telegram"}, names)
+}
+
+func TestApplyClawPreservesAbsentManagedTopLevelIntegrations(t *testing.T) {
 	var applied map[string]any
 	client := &http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -1199,6 +1383,13 @@ func TestApplyClawRemovesAbsentManagedTopLevelIntegrations(t *testing.T) {
 							"webSearch": {
 								"provider": "brave",
 								"secretRef": {"name": "openclaw-instance-brave-search-api-key", "key": "api-key"}
+							},
+							"repoAccess": {
+								"github": {
+									"secretRef": {"name": "openclaw-instance-github-pat", "key": "token"},
+									"enableApiProxy": true,
+									"enableGitHttps": true
+								}
 							}
 						}
 					}`)),
@@ -1216,9 +1407,75 @@ func TestApplyClawRemovesAbsentManagedTopLevelIntegrations(t *testing.T) {
 	req := provisionRequest{Namespace: "sallyom-claw", Name: "instance", Provider: "openai", Management: "operator"}
 
 	require.NoError(t, s.applyClaw(context.Background(), userIdentity{}, req))
+	auth, ok, _ := nestedMap(applied, "spec", "auth")
+	require.True(t, ok)
+	assert.Equal(t, "password", auth["mode"])
+	webSearch, ok, _ := nestedMap(applied, "spec", "webSearch")
+	require.True(t, ok)
+	assert.Equal(t, "brave", webSearch["provider"])
+	repoAccess, ok, _ := nestedMap(applied, "spec", "repoAccess")
+	require.True(t, ok)
+	secretName, _, _ := nestedString(repoAccess, "github", "secretRef", "name")
+	assert.Equal(t, "openclaw-instance-github-pat", secretName)
+}
+
+func TestApplyClawRemovesExplicitManagedTopLevelIntegrations(t *testing.T) {
+	var applied map[string]any
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if r.Method == http.MethodGet {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body: io.NopCloser(strings.NewReader(`{
+						"metadata": {"name": "instance"},
+						"spec": {
+							"auth": {
+								"mode": "password",
+								"passwordSecretRef": {"name": "openclaw-instance-gateway-password", "key": "password"}
+							},
+							"webSearch": {
+								"provider": "brave",
+								"secretRef": {"name": "openclaw-instance-brave-search-api-key", "key": "api-key"}
+							},
+							"repoAccess": {
+								"github": {
+									"secretRef": {"name": "openclaw-instance-github-pat", "key": "token"},
+									"enableApiProxy": true,
+									"enableGitHttps": true
+								}
+							}
+						}
+					}`)),
+				}, nil
+			}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&applied))
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{}`)),
+			}, nil
+		}),
+	}
+	s := &server{apiServer: "https://kubernetes.example.test", bearerToken: "t", client: client}
+	req := provisionRequest{
+		Namespace:  "sallyom-claw",
+		Name:       "instance",
+		Provider:   "openai",
+		Management: "operator",
+		RemovedIntegrations: []integrationRequest{
+			{Kind: "auth-password"},
+			{Kind: "websearch-brave"},
+			{Kind: "github-pat"},
+		},
+	}
+
+	require.NoError(t, s.applyClaw(context.Background(), userIdentity{}, req))
 	_, ok, _ := nestedMap(applied, "spec", "auth")
 	assert.False(t, ok)
 	_, ok, _ = nestedMap(applied, "spec", "webSearch")
+	assert.False(t, ok)
+	_, ok, _ = nestedMap(applied, "spec", "repoAccess")
 	assert.False(t, ok)
 }
 
