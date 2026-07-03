@@ -267,18 +267,18 @@ func (s *server) applyClaw(ctx context.Context, identity userIdentity, req provi
 	if err != nil {
 		return err
 	}
-	existingAuth, existingWebSearch, err := s.currentClawTopLevelMaps(ctx, identity, req.Namespace, req.Name)
+	existingAuth, existingWebSearch, existingRepoAccess, err := s.currentClawTopLevelMaps(ctx, identity, req.Namespace, req.Name)
 	if err != nil {
 		return err
 	}
 	if req.APIKey != "" || req.SecretName != "" {
 		credentials = upsertProvisionCredential(credentials, req)
 	}
-	credentials, auth, webSearch, err := applyIntegrationsToSpec(credentials, req)
+	credentials, auth, webSearch, repoAccess, err := applyIntegrationsToSpec(credentials, req)
 	if err != nil {
 		return err
 	}
-	if req.AgentName != "" {
+	if req.ConfigureAgent && req.AgentName != "" {
 		rawConfig = applyAgentConfig(rawConfig, req.AgentName, req.Model)
 	}
 	if next := agentFilesSpec(req); next != nil {
@@ -298,13 +298,18 @@ func (s *server) applyClaw(ctx context.Context, identity userIdentity, req provi
 	}
 	if len(auth) > 0 {
 		spec["auth"] = auth
-	} else if len(existingAuth) > 0 && !isDeployerManagedAuth(req.Name, existingAuth) {
+	} else if len(existingAuth) > 0 && shouldPreserveAuth(req.Name, existingAuth, req.RemovedIntegrations) {
 		spec["auth"] = existingAuth
 	}
 	if len(webSearch) > 0 {
 		spec["webSearch"] = webSearch
-	} else if len(existingWebSearch) > 0 && !isDeployerManagedWebSearch(req.Name, existingWebSearch) {
+	} else if len(existingWebSearch) > 0 && shouldPreserveWebSearch(req.Name, existingWebSearch, req.RemovedIntegrations) {
 		spec["webSearch"] = existingWebSearch
+	}
+	if len(repoAccess) > 0 {
+		spec["repoAccess"] = repoAccess
+	} else if len(existingRepoAccess) > 0 && shouldPreserveRepoAccess(req.Name, existingRepoAccess, req.RemovedIntegrations) {
+		spec["repoAccess"] = existingRepoAccess
 	}
 
 	body := map[string]any{
@@ -378,19 +383,20 @@ func (s *server) currentClawSpec(ctx context.Context, identity userIdentity, nam
 	return credentials, cloneMap(raw), cloneMap(agentFiles), nil
 }
 
-func (s *server) currentClawTopLevelMaps(ctx context.Context, identity userIdentity, namespace, name string) (map[string]any, map[string]any, error) {
+func (s *server) currentClawTopLevelMaps(ctx context.Context, identity userIdentity, namespace, name string) (map[string]any, map[string]any, map[string]any, error) {
 	var claw map[string]any
 	err := s.kubeJSON(ctx, identity, http.MethodGet, apiPath("apis/claw.sandbox.redhat.com/v1alpha1/namespaces", namespace, "claws", name), nil, &claw)
 	if err != nil {
 		var apiErr apiError
 		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
-			return nil, nil, nil
+			return nil, nil, nil, nil
 		}
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	auth, _, _ := nestedMap(claw, "spec", "auth")
 	webSearch, _, _ := nestedMap(claw, "spec", "webSearch")
-	return cloneMap(auth), cloneMap(webSearch), nil
+	repoAccess, _, _ := nestedMap(claw, "spec", "repoAccess")
+	return cloneMap(auth), cloneMap(webSearch), cloneMap(repoAccess), nil
 }
 
 func upsertCredential(credentials []any, instanceName, provider string) []any {
@@ -556,24 +562,26 @@ func integrationSecrets(instanceName string, integration integrationRequest) []s
 	return secrets
 }
 
-func applyIntegrationsToSpec(credentials []any, req provisionRequest) ([]any, map[string]any, map[string]any, error) {
+func applyIntegrationsToSpec(credentials []any, req provisionRequest) ([]any, map[string]any, map[string]any, map[string]any, error) {
 	var auth map[string]any
 	var webSearch map[string]any
-	credentials = pruneRemovedDeployerCredentials(credentials, req)
+	var repoAccess map[string]any
+	credentials = pruneRemovedDeployerCredentials(credentials, req.Name, req.RemovedIntegrations)
 	for _, integration := range req.Integrations {
 		switch integration.Kind {
 		case "channel-telegram", "channel-discord", "channel-slack", "channel-whatsapp":
 			credential, err := channelCredential(req.Name, integration)
 			if err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, nil, err
 			}
 			credentials = upsertCredentialMap(credentials, credential)
 		case "github-pat":
-			credentials = upsertCredentialMap(credentials, githubCredential(req.Name, integration))
+			credentials = pruneRemovedDeployerCredentials(credentials, req.Name, []integrationRequest{integration})
+			repoAccess = githubRepoAccess(req.Name, integration)
 		case "custom-credential":
 			credential, err := customCredential(req.Name, integration)
 			if err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, nil, err
 			}
 			credentials = upsertCredentialMap(credentials, credential)
 		case "websearch-brave", "websearch-tavily", "websearch-duckduckgo", "websearch-gemini":
@@ -589,14 +597,14 @@ func applyIntegrationsToSpec(credentials []any, req provisionRequest) ([]any, ma
 		case "":
 			continue
 		default:
-			return nil, nil, nil, fmt.Errorf("unsupported integration kind %q", integration.Kind)
+			return nil, nil, nil, nil, fmt.Errorf("unsupported integration kind %q", integration.Kind)
 		}
 	}
-	return credentials, auth, webSearch, nil
+	return credentials, auth, webSearch, repoAccess, nil
 }
 
-func pruneRemovedDeployerCredentials(credentials []any, req provisionRequest) []any {
-	submitted := submittedCredentialNames(req.Integrations)
+func pruneRemovedDeployerCredentials(credentials []any, instanceName string, removedIntegrations []integrationRequest) []any {
+	removed := integrationCredentialNames(removedIntegrations)
 	next := make([]any, 0, len(credentials))
 	for _, credential := range credentials {
 		credentialMap, ok := credential.(map[string]any)
@@ -604,7 +612,7 @@ func pruneRemovedDeployerCredentials(credentials []any, req provisionRequest) []
 			next = append(next, credential)
 			continue
 		}
-		if isRemovedDeployerCredential(req.Name, credentialMap, submitted) {
+		if isRemovedDeployerCredential(instanceName, credentialMap, removed) {
 			continue
 		}
 		next = append(next, credentialMap)
@@ -612,7 +620,7 @@ func pruneRemovedDeployerCredentials(credentials []any, req provisionRequest) []
 	return next
 }
 
-func submittedCredentialNames(integrations []integrationRequest) map[string]bool {
+func integrationCredentialNames(integrations []integrationRequest) map[string]bool {
 	names := map[string]bool{}
 	for _, integration := range integrations {
 		switch integration.Kind {
@@ -631,9 +639,9 @@ func submittedCredentialNames(integrations []integrationRequest) map[string]bool
 	return names
 }
 
-func isRemovedDeployerCredential(instanceName string, credential map[string]any, submitted map[string]bool) bool {
+func isRemovedDeployerCredential(instanceName string, credential map[string]any, removed map[string]bool) bool {
 	name, _ := credential["name"].(string)
-	if name == "" || submitted[name] {
+	if name == "" || !removed[name] {
 		return false
 	}
 	channel, _ := credential["channel"].(string)
@@ -644,6 +652,31 @@ func isRemovedDeployerCredential(instanceName string, credential map[string]any,
 		return true
 	}
 	return hasSecretRefName(credential, "openclaw-"+instanceName+"-"+name)
+}
+
+func shouldPreserveAuth(instanceName string, auth map[string]any, removedIntegrations []integrationRequest) bool {
+	return !hasRemovedIntegration(removedIntegrations, "auth-password") || !isDeployerManagedAuth(instanceName, auth)
+}
+
+func shouldPreserveWebSearch(instanceName string, webSearch map[string]any, removedIntegrations []integrationRequest) bool {
+	provider, _ := webSearch["provider"].(string)
+	return !hasRemovedIntegration(removedIntegrations, "websearch-"+provider) || !isDeployerManagedWebSearch(instanceName, webSearch)
+}
+
+func shouldPreserveRepoAccess(instanceName string, repoAccess map[string]any, removedIntegrations []integrationRequest) bool {
+	if !hasRemovedIntegration(removedIntegrations, "github-pat") {
+		return true
+	}
+	return !isDeployerManagedGitHubRepoAccess(instanceName, repoAccess, removedIntegrations)
+}
+
+func hasRemovedIntegration(integrations []integrationRequest, kind string) bool {
+	for _, integration := range integrations {
+		if integration.Kind == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func isDefaultDeployerChannelCredential(name, channel string) bool {
@@ -699,19 +732,33 @@ func isDeployerManagedWebSearch(instanceName string, webSearch map[string]any) b
 	}
 }
 
-func githubCredential(instanceName string, integration integrationRequest) map[string]any {
-	name := integration.Name
-	if name == "" {
-		name = defaultIntegrationName(integration.Kind)
+func isDeployerManagedGitHubRepoAccess(instanceName string, repoAccess map[string]any, removedIntegrations []integrationRequest) bool {
+	secretName, _, _ := nestedString(repoAccess, "github", "secretRef", "name")
+	if secretName == "" {
+		return false
 	}
-	return map[string]any{
-		"name":   name,
-		"type":   "bearer",
-		"domain": "api.github.com",
-		"secretRef": []map[string]string{{
+	for _, integration := range removedIntegrations {
+		if integration.Kind == "github-pat" && secretName == integrationSecretName(instanceName, integration) {
+			return true
+		}
+	}
+	return false
+}
+
+func githubRepoAccess(instanceName string, integration integrationRequest) map[string]any {
+	github := map[string]any{
+		"secretRef": map[string]any{
 			"name": integrationSecretName(instanceName, integration),
 			"key":  integrationSecretKey(integration),
-		}},
+		},
+		"enableApiProxy": true,
+		"enableGitHttps": true,
+	}
+	if integration.ExposeEnv {
+		github["exposeEnv"] = true
+	}
+	return map[string]any{
+		"github": github,
 	}
 }
 
@@ -1056,6 +1103,7 @@ func credentialSecretNames(claw map[string]any) []string {
 		{"spec", "webSearch", "secretRef", "name"},
 		{"spec", "auth", "passwordSecretRef", "name"},
 		{"spec", "agentFiles", "git", "secretRef", "name"},
+		{"spec", "repoAccess", "github", "secretRef", "name"},
 	} {
 		name, _, _ := nestedString(claw, fields...)
 		if name != "" {

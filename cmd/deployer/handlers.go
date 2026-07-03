@@ -148,6 +148,7 @@ func (s *server) handleProvision(w http.ResponseWriter, r *http.Request) {
 	req.Model = strings.TrimSpace(req.Model)
 	if req.Model != "" {
 		req.Model = normalizeModelRef(req.Provider, req.Model)
+		req.ConfigureAgent = true
 	}
 	if strings.TrimSpace(req.Management) == "" {
 		req.Management = s.defaultConfigManagement()
@@ -184,7 +185,8 @@ func (s *server) handleProvision(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if provider.RequiresGCP && (req.GCPProject == "" || req.GCPLocation == "") {
+	hasCredentialInput := req.APIKey != "" || req.SecretName != ""
+	if provider.RequiresGCP && hasCredentialInput && (req.GCPProject == "" || req.GCPLocation == "") {
 		writeError(w, http.StatusBadRequest, "GCP project and location are required")
 		return
 	}
@@ -204,6 +206,7 @@ func (s *server) handleProvision(w http.ResponseWriter, r *http.Request) {
 	req.ConfigMapName = strings.TrimSpace(req.ConfigMapName)
 	req.ConfigMapKey = strings.TrimSpace(req.ConfigMapKey)
 	normalizeIntegrations(req.Integrations)
+	normalizeIntegrations(req.RemovedIntegrations)
 	if err := validateFilesystemSource(&req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -212,7 +215,6 @@ func (s *server) handleProvision(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	hasCredentialInput := req.APIKey != "" || req.SecretName != ""
 	if !hasCredentialInput {
 		if _, err := s.getState(r.Context(), identity, req.Namespace, req.Name); err != nil {
 			var apiErr apiError

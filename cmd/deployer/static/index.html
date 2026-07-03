@@ -209,6 +209,14 @@
                   </div>
                 </div>
 
+                <div class="section__body" id="integration-github-fields" hidden>
+                  <label class="checkbox-field">
+                    <input id="integrationExposeEnv" name="integrationExposeEnv" type="checkbox">
+                    <span>Expose as <code>GH_TOKEN</code> and <code>GITHUB_TOKEN</code> for the <code>gh</code> CLI</span>
+                  </label>
+                  <p class="field__hint">Leave off for proxy-managed Git HTTPS and GitHub API access.</p>
+                </div>
+
                 <div class="section__body" id="integration-slack-fields" hidden>
                   <div class="credential-choice-grid">
                     <div class="credential-choice">
