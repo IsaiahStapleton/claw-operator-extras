@@ -18,12 +18,13 @@ For each Claw, the deployer creates or deletes in the selected namespace:
 
 ## Seeding the OpenClaw workspace
 
-When **Config owner** is set to **User**, the form offers an **OpenClaw
-workspace source** that maps to `spec.agentFiles` on the Claw (the operator only
-honors it for user-managed Claws):
+The form's **Starting files** section maps to `spec.agentFiles` on the Claw.
+There is no Config owner toggle in the form; choosing a starting-files source
+switches the instance to user-managed config (the operator only honors
+`spec.agentFiles` for user-managed Claws):
 
-- **Git repository** — a repository URL with an optional ref and subpath. The
-  operator clones it in the init container.
+- **From a Git repository** — a repository URL with an optional ref and
+  subpath. The operator clones it in the init container.
 - **Upload a folder** — pick a folder in the browser. The backend packages it
   into `agentfiles.tgz`, stores it in the `openclaw-<name>-agentfiles`
   ConfigMap as the impersonated user, and points `spec.agentFiles.configMapRef`
@@ -103,10 +104,12 @@ suggestion. Set `CLAW_NAMESPACE_SUFFIX` on the deployer container to use a
 different suffix. The UI keeps the field editable and suggests namespaces from
 Claws the user can see.
 
-The deployer binary defaults new Claws to `spec.config.management=operator`.
-These manifests set `CLAW_CONFIG_MANAGEMENT_DEFAULT=user` so this deployer
-deployment defaults to user-managed config while still showing an Operator/User
-toggle in the form.
+The deployer binary defaults new Claws to `spec.config.management=operator`
+when a provision request omits management; `CLAW_CONFIG_MANAGEMENT_DEFAULT`
+overrides that fallback (these manifests set it to `user`). The UI always
+sends management explicitly — there is no Operator/User toggle; a Claw is
+user-managed when a starting-files source is chosen, operator-managed
+otherwise.
 
 ## Automated deploys (merge to main)
 
