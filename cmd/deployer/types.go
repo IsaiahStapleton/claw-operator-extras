@@ -20,6 +20,7 @@ import "net/http"
 
 const (
 	apiKeySecretKey      = "api-key"
+	disableUserConfigEnv = "DISABLE_USER_CONFIG_MANAGEMENT"
 	gcpSecretKey         = "sa-key.json"
 	fieldManager         = "openclaw-deployer"
 	managedByLabel       = "app.kubernetes.io/managed-by"
@@ -35,13 +36,14 @@ const (
 )
 
 type server struct {
-	apiServer         string
-	bearerToken       string
-	impersonate       bool
-	namespaceSuffix   string
-	defaultManagement string
-	client            *http.Client
-	static            http.Handler
+	apiServer           string
+	bearerToken         string
+	impersonate         bool
+	namespaceSuffix     string
+	defaultManagement   string
+	userManagedDisabled bool
+	client              *http.Client
+	static              http.Handler
 }
 
 type userIdentity struct {
@@ -54,6 +56,7 @@ type provisionRequest struct {
 	Name           string `json:"name"`
 	AgentName      string `json:"agentName"`
 	Model          string `json:"model"`
+	OpenClawImage  string `json:"openClawImage"`
 	Provider       string `json:"provider"`
 	ConfigureAgent bool   `json:"configureAgent"`
 	APIKey         string `json:"apiKey"`
@@ -109,10 +112,11 @@ type integrationRequest struct {
 }
 
 type meResponse struct {
-	User              string   `json:"user,omitempty"`
-	DefaultNamespace  string   `json:"defaultNamespace,omitempty"`
-	DefaultManagement string   `json:"defaultManagement"`
-	Providers         []string `json:"providers"`
+	User               string   `json:"user,omitempty"`
+	DefaultNamespace   string   `json:"defaultNamespace,omitempty"`
+	DefaultManagement  string   `json:"defaultManagement"`
+	UserManagedEnabled bool     `json:"userManagedEnabled"`
+	Providers          []string `json:"providers"`
 }
 
 type stateResponse struct {
@@ -126,6 +130,7 @@ type stateResponse struct {
 	Provider       string                  `json:"provider,omitempty"`
 	Providers      []string                `json:"providers,omitempty"`
 	Model          string                  `json:"model,omitempty"`
+	Image          string                  `json:"image,omitempty"`
 	AgentName      string                  `json:"agentName,omitempty"`
 	Management     string                  `json:"management,omitempty"`
 	CreatedAt      string                  `json:"createdAt,omitempty"`

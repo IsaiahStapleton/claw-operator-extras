@@ -23,6 +23,8 @@ spec:
           image: openclaw-deployer:latest
           imagePullPolicy: Always
           env:
+            - name: DISABLE_USER_CONFIG_MANAGEMENT
+              value: "false"
             - name: CLAW_CONFIG_MANAGEMENT_DEFAULT
               value: user
           ports:

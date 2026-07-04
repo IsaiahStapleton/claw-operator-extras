@@ -147,6 +147,7 @@ func stateFromClaw(claw map[string]any) stateResponse {
 	namespace, _, _ := nestedString(claw, "metadata", "namespace")
 	createdAt, _, _ := nestedString(claw, "metadata", "creationTimestamp")
 	model, _, _ := nestedString(claw, "spec", "config", "raw", "agents", "defaults", "model", "primary")
+	image, _, _ := nestedString(claw, "spec", "image")
 	agentName := firstAgentName(claw)
 	management, _, _ := nestedString(claw, "spec", "config", "management")
 	if management == "" {
@@ -164,6 +165,7 @@ func stateFromClaw(claw map[string]any) stateResponse {
 		Provider:       provider,
 		Providers:      providers,
 		Model:          model,
+		Image:          image,
 		AgentName:      agentName,
 		Management:     management,
 		CreatedAt:      createdAt,
@@ -292,6 +294,9 @@ func (s *server) applyClaw(ctx context.Context, identity userIdentity, req provi
 			"mergeMode":  "merge",
 			"management": req.Management,
 		},
+	}
+	if req.OpenClawImage != "" {
+		spec["image"] = req.OpenClawImage
 	}
 	if len(agentFiles) > 0 {
 		spec["agentFiles"] = agentFiles

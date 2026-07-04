@@ -111,6 +111,11 @@ user-managed, so OpenClaw owns runtime config after the operator seeds the
 initial CR settings. Operator-managed remains available for Claws that should
 keep reconciling runtime config from the form and the Claw CR.
 
+Set `DISABLE_USER_CONFIG_MANAGEMENT=true` on the deployer when the operator has
+user-managed config disabled. The deployer hides user-managed-only controls,
+including the custom `spec.image` OpenClaw image override, and rejects requests
+that try to set them.
+
 ## Automated deploys (merge to main)
 
 Merging a PR that touches deployer source rolls the running deployer out

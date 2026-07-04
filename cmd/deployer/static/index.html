@@ -335,12 +335,12 @@
 
             <div class="divider"></div>
 
-            <!-- Step 5 · Config ownership -->
+            <!-- Step 5 · Runtime config -->
             <div class="section__head">
               <span class="section__num">5</span>
-              <h3 class="section__title">Config ownership</h3>
+              <h3 class="section__title">Config ownership &amp; image</h3>
             </div>
-            <div class="section__body">
+            <div class="section__body cols">
               <div class="field">
                 <label for="management">Who manages runtime config?</label>
                 <select id="management" name="management" style="max-width:320px;">
@@ -348,6 +348,11 @@
                   <option value="operator">Operator-managed — CR fields keep applying</option>
                 </select>
                 <p class="field__hint">User-managed is the default. The operator seeds initial provider/model config, then UI, CLI, plugin, skill, MCP, and agent config edits persist on the PVC. Operator-managed keeps reconciling runtime config from this form and the Claw CR.</p>
+              </div>
+              <div class="field" id="openclaw-image-field" hidden>
+                <label for="openClawImage">OpenClaw image override <span class="muted">(optional)</span></label>
+                <input id="openClawImage" name="openClawImage" placeholder="ghcr.io/openclaw/openclaw:2026.6.10">
+                <p class="field__hint">Leave blank for the operator default. A value here sets <code>spec.image</code>.</p>
               </div>
             </div>
 

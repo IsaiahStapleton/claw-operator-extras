@@ -12,6 +12,7 @@ const state = {
   provider: localStorage.getItem("openclaw-deployer.provider") || "openrouter",
   selectedName: localStorage.getItem("openclaw-deployer.name") || "instance",
   model: localStorage.getItem("openclaw-deployer.model") || "",
+  openClawImage: "",
   secretName: "",
   secretKey: "",
   gcpProject: localStorage.getItem("openclaw-deployer.gcpProject") || "",
@@ -31,6 +32,7 @@ const state = {
   currentCredentialRefs: [],
   exists: false,
   ready: false,
+  userManagedEnabled: false,
   submitted: false,
   copied: "",
 };
@@ -102,6 +104,8 @@ const els = {
   model: document.getElementById("model"),
   modelOptions: document.getElementById("model-options"),
   defaultModel: document.getElementById("default-model"),
+  openClawImage: document.getElementById("openClawImage"),
+  openClawImageField: document.getElementById("openclaw-image-field"),
   vertexBox: document.getElementById("vertex-box"),
   gcpProject: document.getElementById("gcpProject"),
   gcpLocation: document.getElementById("gcpLocation"),
@@ -192,6 +196,7 @@ els.namespace.value = state.namespace;
 els.clawName.value = state.selectedName;
 els.provider.value = state.provider;
 els.model.value = state.model;
+els.openClawImage.value = state.openClawImage;
 els.secretName.value = state.secretName;
 els.secretKey.value = state.secretKey;
 els.gcpProject.value = state.gcpProject;
@@ -218,6 +223,7 @@ function isGoogleVertex() {
 }
 
 function selectedManagement() {
+  if (!state.userManagedEnabled) return "operator";
   return els.management.value === "operator" ? "operator" : "user";
 }
 
@@ -340,6 +346,15 @@ async function init() {
       els.user.textContent = me.user;
       els.avatar.textContent = me.user.slice(0, 2).toUpperCase();
     }
+    state.userManagedEnabled = Boolean(me.userManagedEnabled);
+    els.openClawImageField.hidden = !state.userManagedEnabled;
+    els.management.disabled = !state.userManagedEnabled;
+    if (!state.userManagedEnabled) {
+      els.openClawImage.value = "";
+      state.openClawImage = "";
+      state.management = "operator";
+      els.management.value = state.management;
+    }
     if (!localStorage.getItem("openclaw-deployer.management") && me.defaultManagement) {
       state.management = me.defaultManagement;
       els.management.value = state.management;
@@ -369,6 +384,7 @@ async function refresh() {
   state.selectedName = els.clawName.value.trim() || "instance";
   state.provider = els.provider.value;
   state.model = els.model.value.trim();
+  state.openClawImage = state.userManagedEnabled ? els.openClawImage.value.trim() : "";
   state.secretName = els.secretName.value.trim();
   state.secretKey = els.secretKey.value.trim();
   state.gcpProject = els.gcpProject.value.trim();
@@ -403,7 +419,7 @@ function renderList(claws) {
   state.exists = Boolean(selected);
   state.ready = Boolean(selected && selected.ready);
   if (selected) {
-    state.management = selected.management || "operator";
+    state.management = state.userManagedEnabled ? (selected.management || "operator") : "operator";
     els.management.value = state.management;
     state.currentSecretNames = selected.secretNames || [];
     state.currentCredentialRefs = selected.credentialRefs || [];
@@ -416,9 +432,20 @@ function renderList(claws) {
       state.model = "";
       localStorage.removeItem("openclaw-deployer.model");
     }
+    if (state.userManagedEnabled && selected.image) {
+      els.openClawImage.value = selected.image;
+      state.openClawImage = selected.image;
+    } else if (!els.openClawImage.matches(":focus")) {
+      els.openClawImage.value = "";
+      state.openClawImage = "";
+    }
   } else {
     state.currentSecretNames = [];
     state.currentCredentialRefs = [];
+    if (!els.openClawImage.matches(":focus")) {
+      els.openClawImage.value = "";
+      state.openClawImage = "";
+    }
   }
 
   els.provision.textContent = state.exists ? "Save changes" : "Create OpenClaw";
@@ -995,6 +1022,7 @@ function renderReview() {
     ["Name", els.clawName.value.trim() || "—"],
     ["Provider", providerNames.join(", ")],
     ["Model", effectiveModel() || "—"],
+    ["OpenClaw image", state.userManagedEnabled && els.openClawImage.value.trim() ? els.openClawImage.value.trim() : "Operator default"],
     ["API key", credential],
     ["Config ownership", selectedManagement() === "user" ? "User-managed" : "Operator-managed"],
     ["Add-ons", state.integrations.length ? state.integrations.map((i) => integrationLabels[i.kind] || i.kind).join(", ") : "None"],
@@ -1095,6 +1123,9 @@ function generateYaml() {
   y += "  name: " + name + "\n";
   y += "  namespace: " + ns + "\n";
   y += "spec:\n";
+  if (state.userManagedEnabled && els.openClawImage.value.trim()) {
+    y += "  image: " + els.openClawImage.value.trim() + "\n";
+  }
   if (shouldConfigureAgent()) {
     y += "  provider: " + els.provider.value + "\n";
     y += "  model: " + (effectiveModel() || "<provider default>") + "\n";
@@ -1307,6 +1338,7 @@ els.provision.addEventListener("click", async () => {
   const name = els.clawName.value.trim();
   const provider = els.provider.value;
   const model = els.model.value.trim();
+  const openClawImage = state.userManagedEnabled ? els.openClawImage.value.trim() : "";
   const configureAgent = shouldConfigureAgent();
   const vertex = isGoogleVertex();
   const apiKey = (vertex ? els.gcpCredentials.value : els.apiKey.value).trim();
@@ -1346,7 +1378,7 @@ els.provision.addEventListener("click", async () => {
     const current = await api("/api/provision", {
       method: "POST",
       body: JSON.stringify({
-        namespace, name, provider, configureAgent, model, apiKey, secretName, secretKey, gcpProject, gcpLocation, management,
+        namespace, name, provider, configureAgent, model, openClawImage, apiKey, secretName, secretKey, gcpProject, gcpLocation, management,
         filesystemSource, gitURL, gitRef, gitPath, gitSecretName, gitUsername, gitPassword, configMapName,
         integrations, removedIntegrations,
       }),
@@ -1377,6 +1409,7 @@ els.reset.addEventListener("click", () => {
   els.clawName.value = "instance";
   els.provider.value = "openrouter";
   els.model.value = "";
+  els.openClawImage.value = "";
   els.secretName.value = "";
   els.secretKey.value = "";
   els.gcpProject.value = "";
@@ -1395,6 +1428,7 @@ els.reset.addEventListener("click", () => {
   state.integrations = [];
   state.removedIntegrations = [];
   state.management = "user";
+  state.openClawImage = "";
   persistIntegrations();
   els.uploadName.hidden = true;
   renderErrors({});
@@ -1578,6 +1612,10 @@ els.gcpLocation.addEventListener("change", () => {
 els.model.addEventListener("change", () => {
   state.model = els.model.value.trim();
   localStorage.setItem("openclaw-deployer.model", state.model);
+});
+els.openClawImage.addEventListener("change", () => {
+  state.openClawImage = state.userManagedEnabled ? els.openClawImage.value.trim() : "";
+  renderReview();
 });
 els.secretName.addEventListener("change", () => {
   state.secretName = els.secretName.value.trim();
