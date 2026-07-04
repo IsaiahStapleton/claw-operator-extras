@@ -64,7 +64,8 @@
               </div>
               <div class="field">
                 <label for="clawName">Name <span class="req">*</span></label>
-                <input id="clawName" name="clawName" value="instance" aria-describedby="hint-clawName">
+                <input id="clawName" name="clawName" value="instance" list="claw-name-options" aria-describedby="hint-clawName">
+                <datalist id="claw-name-options"></datalist>
                 <p class="field__hint" id="hint-clawName">Lowercase letters, numbers, and dashes — for example <code>my-assistant</code>.</p>
                 <p class="field__error" id="err-clawName" hidden></p>
               </div>
@@ -335,9 +336,32 @@
 
             <div class="divider"></div>
 
-            <!-- Step 5 · Starting files (optional / advanced) -->
-            <button type="button" class="advanced-toggle" id="advanced-toggle" aria-expanded="false" aria-controls="advanced-body">
+            <!-- Step 5 · Runtime config -->
+            <div class="section__head">
               <span class="section__num">5</span>
+              <h3 class="section__title">Config ownership &amp; image</h3>
+            </div>
+            <div class="section__body cols">
+              <div class="field">
+                <label for="management">Who manages runtime config?</label>
+                <select id="management" name="management" style="max-width:320px;">
+                  <option value="user">User-managed — OpenClaw owns runtime config</option>
+                  <option value="operator">Operator-managed — CR fields keep applying</option>
+                </select>
+                <p class="field__hint" id="management-hint">User-managed is the default. The operator seeds initial provider/model config, then UI, CLI, plugin, skill, MCP, and agent config edits persist on the PVC. Operator-managed keeps reconciling runtime config from this form and the Claw CR.</p>
+              </div>
+              <div class="field" id="openclaw-image-field" hidden>
+                <label for="openClawImage">OpenClaw image override <span class="muted">(optional)</span></label>
+                <input id="openClawImage" name="openClawImage" placeholder="ghcr.io/openclaw/openclaw:2026.6.10">
+                <p class="field__hint">Leave blank for the operator default. A value here sets <code>spec.image</code>.</p>
+              </div>
+            </div>
+
+            <div class="divider"></div>
+
+            <!-- Step 6 · Starting files (optional / advanced) -->
+            <button type="button" class="advanced-toggle" id="advanced-toggle" aria-expanded="false" aria-controls="advanced-body">
+              <span class="section__num">6</span>
               <h3 class="section__title">Starting files <span class="optional">· optional</span></h3>
               <svg class="caret" id="advanced-caret" width="14" height="14" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="var(--text-muted)" stroke-width="1.6" stroke-linecap="round"/></svg>
             </button>

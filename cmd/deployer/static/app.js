@@ -1,6 +1,20 @@
-function storedIntegrations() {
+const initialNamespace = localStorage.getItem("openclaw-deployer.namespace") || "";
+const initialSelectedName = localStorage.getItem("openclaw-deployer.name") || "instance";
+
+function integrationStorageKey(namespace, name) {
+  if (!namespace || !name) {
+    return "";
+  }
+  return `openclaw-deployer.integrations.${namespace}.${name}`;
+}
+
+function storedIntegrations(namespace, name) {
+  const key = integrationStorageKey(namespace, name);
+  if (!key) {
+    return [];
+  }
   try {
-    const parsed = JSON.parse(localStorage.getItem("openclaw-deployer.integrations") || "[]");
+    const parsed = JSON.parse(localStorage.getItem(key) || "[]");
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
@@ -8,20 +22,24 @@ function storedIntegrations() {
 }
 
 const state = {
-  namespace: localStorage.getItem("openclaw-deployer.namespace") || "",
+  namespace: initialNamespace,
   provider: localStorage.getItem("openclaw-deployer.provider") || "openrouter",
-  selectedName: localStorage.getItem("openclaw-deployer.name") || "instance",
+  selectedName: initialSelectedName,
   model: localStorage.getItem("openclaw-deployer.model") || "",
+  openClawImage: "",
   secretName: "",
   secretKey: "",
   gcpProject: localStorage.getItem("openclaw-deployer.gcpProject") || "",
   gcpLocation: localStorage.getItem("openclaw-deployer.gcpLocation") || "",
+  management: localStorage.getItem("openclaw-deployer.management") || "user",
   filesystemSource: localStorage.getItem("openclaw-deployer.filesystemSource") || "",
   gitURL: localStorage.getItem("openclaw-deployer.gitURL") || "",
   gitRef: localStorage.getItem("openclaw-deployer.gitRef") || "",
   gitPath: localStorage.getItem("openclaw-deployer.gitPath") || "",
   gitSecretName: "",
-  integrations: storedIntegrations(),
+  integrations: storedIntegrations(initialNamespace, initialSelectedName),
+  integrationScope: integrationStorageKey(initialNamespace, initialSelectedName),
+  integrationsDirty: false,
   removedIntegrations: [],
   theme: localStorage.getItem("openclaw-deployer.theme") === "dark" ? "dark" : "light",
   claws: [],
@@ -30,6 +48,7 @@ const state = {
   currentCredentialRefs: [],
   exists: false,
   ready: false,
+  userManagedEnabled: false,
   submitted: false,
   copied: "",
 };
@@ -97,10 +116,14 @@ const els = {
   namespace: document.getElementById("namespace"),
   namespaceOptions: document.getElementById("namespace-options"),
   clawName: document.getElementById("clawName"),
+  clawNameOptions: document.getElementById("claw-name-options"),
   provider: document.getElementById("provider"),
   model: document.getElementById("model"),
   modelOptions: document.getElementById("model-options"),
   defaultModel: document.getElementById("default-model"),
+  openClawImage: document.getElementById("openClawImage"),
+  openClawImageField: document.getElementById("openclaw-image-field"),
+  managementHint: document.getElementById("management-hint"),
   vertexBox: document.getElementById("vertex-box"),
   gcpProject: document.getElementById("gcpProject"),
   gcpLocation: document.getElementById("gcpLocation"),
@@ -116,6 +139,7 @@ const els = {
   advancedCaret: document.getElementById("advanced-caret"),
   advancedBody: document.getElementById("advanced-body"),
   filesystemSource: document.getElementById("filesystemSource"),
+  management: document.getElementById("management"),
   filesystemSourceHint: document.getElementById("filesystem-source-hint"),
   workspaceSourceHelp: document.getElementById("workspace-source-help"),
   gitBox: document.getElementById("git-box"),
@@ -190,10 +214,12 @@ els.namespace.value = state.namespace;
 els.clawName.value = state.selectedName;
 els.provider.value = state.provider;
 els.model.value = state.model;
+els.openClawImage.value = state.openClawImage;
 els.secretName.value = state.secretName;
 els.secretKey.value = state.secretKey;
 els.gcpProject.value = state.gcpProject;
 els.gcpLocation.value = state.gcpLocation || defaultGCPLocations[state.provider] || "";
+els.management.value = state.management;
 els.filesystemSource.value = state.filesystemSource;
 els.gitURL.value = state.gitURL;
 els.gitRef.value = state.gitRef;
@@ -214,13 +240,9 @@ function isGoogleVertex() {
   return googleVertexProviders.has(els.provider.value);
 }
 
-// Management is inferred: choosing a workspace source means the user manages
-// config; leaving it as "None" leaves the operator in control. This replaces
-// the former Config owner radio toggle while keeping the /api/provision
-// contract (which still accepts `management`) unchanged.
-function inferredManagement() {
-  const source = els.filesystemSource.value;
-  return source === "git" || source === "upload" ? "user" : "operator";
+function selectedManagement() {
+  if (!state.userManagedEnabled) return "operator";
+  return els.management.value === "operator" ? "operator" : "user";
 }
 
 function effectiveModel() {
@@ -342,6 +364,22 @@ async function init() {
       els.user.textContent = me.user;
       els.avatar.textContent = me.user.slice(0, 2).toUpperCase();
     }
+    state.userManagedEnabled = Boolean(me.userManagedEnabled);
+    els.openClawImageField.hidden = !state.userManagedEnabled;
+    els.management.disabled = !state.userManagedEnabled;
+    els.managementHint.textContent = state.userManagedEnabled
+      ? "User-managed is the default. The operator seeds initial provider/model config, then UI, CLI, plugin, skill, MCP, and agent config edits persist on the PVC. Operator-managed keeps reconciling runtime config from this form and the Claw CR."
+      : "User-managed config is disabled by this deployer. New and updated Claws use operator-managed runtime config, so CR fields from this form keep applying.";
+    if (!state.userManagedEnabled) {
+      els.openClawImage.value = "";
+      state.openClawImage = "";
+      state.management = "operator";
+      els.management.value = state.management;
+    }
+    if (!localStorage.getItem("openclaw-deployer.management") && me.defaultManagement) {
+      state.management = me.defaultManagement;
+      els.management.value = state.management;
+    }
   } catch (error) {
     renderAlert({ kind: "danger", title: "Couldn't load your session", body: error.message });
     return;
@@ -363,14 +401,17 @@ async function loadNamespaceSuggestions() {
 }
 
 async function refresh() {
+  const previousNamespace = state.namespace;
   state.namespace = els.namespace.value.trim();
   state.selectedName = els.clawName.value.trim() || "instance";
   state.provider = els.provider.value;
   state.model = els.model.value.trim();
+  state.openClawImage = state.userManagedEnabled ? els.openClawImage.value.trim() : "";
   state.secretName = els.secretName.value.trim();
   state.secretKey = els.secretKey.value.trim();
   state.gcpProject = els.gcpProject.value.trim();
   state.gcpLocation = els.gcpLocation.value.trim();
+  state.management = selectedManagement();
   state.gitSecretName = els.gitSecretName.value.trim();
   localStorage.setItem("openclaw-deployer.namespace", state.namespace);
   localStorage.setItem("openclaw-deployer.name", state.selectedName);
@@ -378,27 +419,49 @@ async function refresh() {
   localStorage.setItem("openclaw-deployer.model", state.model);
   localStorage.setItem("openclaw-deployer.gcpProject", state.gcpProject);
   localStorage.setItem("openclaw-deployer.gcpLocation", state.gcpLocation);
+  localStorage.setItem("openclaw-deployer.management", state.management);
 
   setStatus("Checking status…");
   try {
     const current = await api("/api/claws");
-    renderList(current.claws || []);
+    renderList(current.claws || [], { namespaceChanged: state.namespace !== previousNamespace });
   } catch (error) {
-    renderList([]);
+    renderList([], { namespaceChanged: state.namespace !== previousNamespace });
     renderAlert({ kind: "danger", title: "Couldn't list instances", body: error.message });
   }
 }
 
-function renderList(claws) {
+function renderList(claws, opts = {}) {
   state.claws = claws;
   renderNamespaceOptions(claws);
+  const namespaceClaws = state.namespace
+    ? claws.filter((claw) => (claw.namespace || state.namespace) === state.namespace)
+    : claws;
+  renderClawNameOptions(namespaceClaws);
+
+  if (opts.namespaceChanged && state.namespace) {
+    const names = namespaceClaws.map((claw) => claw.name).filter(Boolean).sort();
+    if (names.length > 0 && !names.includes(state.selectedName)) {
+      state.selectedName = names[0];
+      els.clawName.value = state.selectedName;
+      localStorage.setItem("openclaw-deployer.name", state.selectedName);
+    } else if (names.length === 0 && state.selectedName !== "instance") {
+      state.selectedName = "instance";
+      els.clawName.value = state.selectedName;
+      localStorage.setItem("openclaw-deployer.name", state.selectedName);
+    }
+  }
+  loadIntegrationsForSelection();
+
   let selected = null;
   if (state.namespace) {
-    selected = claws.find((claw) => (claw.namespace || state.namespace) === state.namespace && claw.name === state.selectedName) || null;
+    selected = namespaceClaws.find((claw) => claw.name === state.selectedName) || null;
   }
   state.exists = Boolean(selected);
   state.ready = Boolean(selected && selected.ready);
   if (selected) {
+    state.management = state.userManagedEnabled ? (selected.management || "operator") : "operator";
+    els.management.value = state.management;
     state.currentSecretNames = selected.secretNames || [];
     state.currentCredentialRefs = selected.credentialRefs || [];
     if (selected.model) {
@@ -410,9 +473,23 @@ function renderList(claws) {
       state.model = "";
       localStorage.removeItem("openclaw-deployer.model");
     }
+    if (state.userManagedEnabled && selected.image) {
+      els.openClawImage.value = selected.image;
+      state.openClawImage = selected.image;
+    } else if (!els.openClawImage.matches(":focus")) {
+      els.openClawImage.value = "";
+      state.openClawImage = "";
+    }
   } else {
     state.currentSecretNames = [];
     state.currentCredentialRefs = [];
+    if (!state.integrationsDirty && state.integrations.length > 0) {
+      clearIntegrationsForSelection();
+    }
+    if (!els.openClawImage.matches(":focus")) {
+      els.openClawImage.value = "";
+      state.openClawImage = "";
+    }
   }
 
   els.provision.textContent = state.exists ? "Save changes" : "Create OpenClaw";
@@ -452,6 +529,16 @@ function renderNamespaceOptions(claws) {
     const option = document.createElement("option");
     option.value = namespace;
     els.namespaceOptions.appendChild(option);
+  }
+}
+
+function renderClawNameOptions(claws) {
+  const names = [...new Set(claws.map((claw) => claw.name).filter(Boolean))].sort();
+  els.clawNameOptions.innerHTML = "";
+  for (const name of names) {
+    const option = document.createElement("option");
+    option.value = name;
+    els.clawNameOptions.appendChild(option);
   }
 }
 
@@ -774,13 +861,50 @@ function typedChannelConfigJSON(kind) {
 }
 
 function persistIntegrations() {
+  const key = integrationStorageKey(state.namespace, state.selectedName);
+  localStorage.removeItem("openclaw-deployer.integrations");
+  if (!key) {
+    return;
+  }
   const safe = state.integrations.map(({ secretValue, appSecretValue, ...integration }) => integration);
-  localStorage.setItem("openclaw-deployer.integrations", JSON.stringify(safe));
+  if (safe.length === 0) {
+    localStorage.removeItem(key);
+    return;
+  }
+  localStorage.setItem(key, JSON.stringify(safe));
+}
+
+function loadIntegrationsForSelection() {
+  const scope = integrationStorageKey(state.namespace, state.selectedName);
+  if (scope === state.integrationScope) {
+    return;
+  }
+  state.integrationScope = scope;
+  state.integrations = storedIntegrations(state.namespace, state.selectedName);
+  state.removedIntegrations = [];
+  state.integrationsDirty = false;
+  renderIntegrations();
+}
+
+function clearIntegrationsForSelection() {
+  state.integrations = [];
+  state.removedIntegrations = [];
+  state.integrationsDirty = false;
+  persistIntegrations();
+  renderIntegrations();
+}
+
+function clearStoredIntegrations(namespace, name) {
+  const key = integrationStorageKey(namespace, name);
+  if (key) {
+    localStorage.removeItem(key);
+  }
 }
 
 function renderIntegrations() {
   els.integrationList.innerHTML = "";
   if (state.integrations.length === 0) {
+    setIntegrationOpen(false);
     return;
   }
   for (const [idx, integration] of state.integrations.entries()) {
@@ -802,6 +926,7 @@ function renderIntegrations() {
     remove.addEventListener("click", () => {
       state.removedIntegrations.push(integration);
       state.integrations.splice(idx, 1);
+      state.integrationsDirty = true;
       persistIntegrations();
       renderIntegrations();
       renderReview();
@@ -989,7 +1114,9 @@ function renderReview() {
     ["Name", els.clawName.value.trim() || "—"],
     ["Provider", providerNames.join(", ")],
     ["Model", effectiveModel() || "—"],
+    ["OpenClaw image", state.userManagedEnabled && els.openClawImage.value.trim() ? els.openClawImage.value.trim() : "Operator default"],
     ["API key", credential],
+    ["Config ownership", selectedManagement() === "user" ? "User-managed" : "Operator-managed"],
     ["Add-ons", state.integrations.length ? state.integrations.map((i) => integrationLabels[i.kind] || i.kind).join(", ") : "None"],
     ["Starting files", source === "git" ? "From Git" : source === "upload" ? "Uploaded folder" : "None"],
   ];
@@ -1088,11 +1215,15 @@ function generateYaml() {
   y += "  name: " + name + "\n";
   y += "  namespace: " + ns + "\n";
   y += "spec:\n";
+  if (state.userManagedEnabled && els.openClawImage.value.trim()) {
+    y += "  image: " + els.openClawImage.value.trim() + "\n";
+  }
   if (shouldConfigureAgent()) {
     y += "  provider: " + els.provider.value + "\n";
     y += "  model: " + (effectiveModel() || "<provider default>") + "\n";
   }
-  y += "  configOwner: " + inferredManagement() + "\n";
+  y += "  config:\n";
+  y += "    management: " + selectedManagement() + "\n";
   if (vertex && (shouldConfigureAgent() || selectedProviderCredentialSupplied())) {
     y += "  vertex:\n";
     y += "    projectID: " + (els.gcpProject.value.trim() || "<gcp-project>") + "\n";
@@ -1299,6 +1430,7 @@ els.provision.addEventListener("click", async () => {
   const name = els.clawName.value.trim();
   const provider = els.provider.value;
   const model = els.model.value.trim();
+  const openClawImage = state.userManagedEnabled ? els.openClawImage.value.trim() : "";
   const configureAgent = shouldConfigureAgent();
   const vertex = isGoogleVertex();
   const apiKey = (vertex ? els.gcpCredentials.value : els.apiKey.value).trim();
@@ -1306,7 +1438,7 @@ els.provision.addEventListener("click", async () => {
   const secretKey = els.secretKey.value.trim();
   const gcpProject = els.gcpProject.value.trim();
   const gcpLocation = els.gcpLocation.value.trim();
-  const management = inferredManagement();
+  const management = selectedManagement();
   const source = els.filesystemSource.value;
   const gitURL = els.gitURL.value.trim();
   const gitRef = els.gitRef.value.trim();
@@ -1338,7 +1470,7 @@ els.provision.addEventListener("click", async () => {
     const current = await api("/api/provision", {
       method: "POST",
       body: JSON.stringify({
-        namespace, name, provider, configureAgent, model, apiKey, secretName, secretKey, gcpProject, gcpLocation, management,
+        namespace, name, provider, configureAgent, model, openClawImage, apiKey, secretName, secretKey, gcpProject, gcpLocation, management,
         filesystemSource, gitURL, gitRef, gitPath, gitSecretName, gitUsername, gitPassword, configMapName,
         integrations, removedIntegrations,
       }),
@@ -1351,6 +1483,7 @@ els.provision.addEventListener("click", async () => {
       delete integration.appSecretValue;
     }
     state.removedIntegrations = [];
+    state.integrationsDirty = false;
     persistIntegrations();
     els.agentFiles.value = "";
     state.selectedName = current.name || name;
@@ -1364,15 +1497,19 @@ els.provision.addEventListener("click", async () => {
 });
 
 els.reset.addEventListener("click", () => {
+  const previousNamespace = state.namespace;
+  const previousName = state.selectedName;
   state.submitted = false;
   els.namespace.value = "";
   els.clawName.value = "instance";
   els.provider.value = "openrouter";
   els.model.value = "";
+  els.openClawImage.value = "";
   els.secretName.value = "";
   els.secretKey.value = "";
   els.gcpProject.value = "";
   els.gcpLocation.value = defaultGCPLocations.openrouter || "";
+  els.management.value = "user";
   els.apiKey.value = "";
   els.gcpCredentials.value = "";
   els.filesystemSource.value = "";
@@ -1383,8 +1520,15 @@ els.reset.addEventListener("click", () => {
   els.gitUsername.value = "";
   els.gitPassword.value = "";
   els.agentFiles.value = "";
+  state.namespace = "";
+  state.selectedName = "instance";
   state.integrations = [];
   state.removedIntegrations = [];
+  state.integrationScope = integrationStorageKey("", "instance");
+  state.integrationsDirty = false;
+  state.management = "user";
+  state.openClawImage = "";
+  clearStoredIntegrations(previousNamespace, previousName);
   persistIntegrations();
   els.uploadName.hidden = true;
   renderErrors({});
@@ -1420,6 +1564,10 @@ async function deleteClaw(namespace, name) {
   setStatus(`Deleting ${namespace}/${name}…`);
   try {
     await api(`/api/claw?namespace=${encodeURIComponent(namespace)}&name=${encodeURIComponent(name)}`, { method: "DELETE" });
+    clearStoredIntegrations(namespace, name);
+    if (namespace === state.namespace && name === state.selectedName) {
+      clearIntegrationsForSelection();
+    }
     await refresh();
   } catch (error) {
     setStatus(error.message, true);
@@ -1510,6 +1658,12 @@ els.filesystemSource.addEventListener("change", () => {
   revalidate();
 });
 
+els.management.addEventListener("change", () => {
+  state.management = selectedManagement();
+  localStorage.setItem("openclaw-deployer.management", state.management);
+  revalidate();
+});
+
 els.agentFiles.addEventListener("change", () => {
   const n = els.agentFiles.files ? els.agentFiles.files.length : 0;
   els.uploadName.hidden = n === 0;
@@ -1537,6 +1691,7 @@ els.integrationAdd.addEventListener("click", () => {
   try {
     const integration = buildIntegrationFromForm();
     state.integrations.push(integration);
+    state.integrationsDirty = true;
     persistIntegrations();
     clearIntegrationSecretInputs();
     setIntegrationOpen(true);
@@ -1562,6 +1717,10 @@ els.gcpLocation.addEventListener("change", () => {
 els.model.addEventListener("change", () => {
   state.model = els.model.value.trim();
   localStorage.setItem("openclaw-deployer.model", state.model);
+});
+els.openClawImage.addEventListener("change", () => {
+  state.openClawImage = state.userManagedEnabled ? els.openClawImage.value.trim() : "";
+  renderReview();
 });
 els.secretName.addEventListener("change", () => {
   state.secretName = els.secretName.value.trim();

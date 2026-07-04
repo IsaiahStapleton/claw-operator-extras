@@ -104,12 +104,17 @@ suggestion. Set `CLAW_NAMESPACE_SUFFIX` on the deployer container to use a
 different suffix. The UI keeps the field editable and suggests namespaces from
 Claws the user can see.
 
-The deployer binary defaults new Claws to `spec.config.management=operator`
-when a provision request omits management; `CLAW_CONFIG_MANAGEMENT_DEFAULT`
-overrides that fallback (these manifests set it to `user`). The UI always
-sends management explicitly — there is no Operator/User toggle; a Claw is
-user-managed when a starting-files source is chosen, operator-managed
-otherwise.
+The deployer binary defaults new Claws to `spec.config.management=user` when a
+provision request omits management; `CLAW_CONFIG_MANAGEMENT_DEFAULT` overrides
+that fallback. The UI exposes a Config ownership option and defaults it to
+user-managed, so OpenClaw owns runtime config after the operator seeds the
+initial CR settings. Operator-managed remains available for Claws that should
+keep reconciling runtime config from the form and the Claw CR.
+
+Set `DISABLE_USER_CONFIG_MANAGEMENT=true` on the deployer when the operator has
+user-managed config disabled. The deployer hides user-managed-only controls,
+including the custom `spec.image` OpenClaw image override, and rejects requests
+that try to set them.
 
 ## Automated deploys (merge to main)
 

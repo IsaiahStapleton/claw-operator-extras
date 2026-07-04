@@ -31,10 +31,11 @@ func (s *server) handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, meResponse{
-		User:              user,
-		DefaultNamespace:  allowedNamespaceForUser(user, s.namespaceSuffix),
-		DefaultManagement: s.defaultConfigManagement(),
-		Providers:         []string{"openrouter", "openai", "google", "google-vertex", "anthropic", "anthropic-vertex", "xai"},
+		User:               user,
+		DefaultNamespace:   allowedNamespaceForUser(user, s.namespaceSuffix),
+		DefaultManagement:  s.defaultConfigManagement(),
+		UserManagedEnabled: !s.userManagedDisabled,
+		Providers:          []string{"openrouter", "openai", "google", "google-vertex", "anthropic", "anthropic-vertex", "xai"},
 	})
 }
 
@@ -150,6 +151,15 @@ func (s *server) handleProvision(w http.ResponseWriter, r *http.Request) {
 		req.Model = normalizeModelRef(req.Provider, req.Model)
 		req.ConfigureAgent = true
 	}
+	req.OpenClawImage = strings.TrimSpace(req.OpenClawImage)
+	if req.OpenClawImage != "" && s.userManagedDisabled {
+		writeError(w, http.StatusBadRequest, "OpenClaw image overrides require user-managed config to be enabled")
+		return
+	}
+	if strings.ContainsAny(req.OpenClawImage, " \t\r\n") {
+		writeError(w, http.StatusBadRequest, "OpenClaw image must not contain whitespace")
+		return
+	}
 	if strings.TrimSpace(req.Management) == "" {
 		req.Management = s.defaultConfigManagement()
 	} else {
@@ -158,6 +168,10 @@ func (s *server) handleProvision(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+	}
+	if req.Management == "user" && s.userManagedDisabled {
+		writeError(w, http.StatusBadRequest, "user-managed config is disabled by this deployer")
+		return
 	}
 	req.Namespace = strings.TrimSpace(req.Namespace)
 	req.SecretName = strings.TrimSpace(req.SecretName)

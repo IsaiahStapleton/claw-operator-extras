@@ -720,7 +720,7 @@ func TestApplyClawWithoutModelSetsAgentNameOnly(t *testing.T) {
 	_, hasModel, _ := nestedValue(raw, "agents", "defaults", "model")
 	assert.False(t, hasModel, "blank model should not force a model config")
 	management, _, _ := nestedString(applied, "spec", "config", "management")
-	assert.Equal(t, "operator", management)
+	assert.Equal(t, "user", management)
 }
 
 func TestApplyClawSetsUserConfigManagement(t *testing.T) {
@@ -760,6 +760,80 @@ func TestApplyClawSetsUserConfigManagement(t *testing.T) {
 	assert.Equal(t, "user", management)
 }
 
+func TestApplyClawSetsOpenClawImage(t *testing.T) {
+	var applied map[string]any
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if r.Method == http.MethodGet {
+				return &http.Response{
+					StatusCode: http.StatusNotFound,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"message":"not found"}`)),
+				}, nil
+			}
+			require.Equal(t, http.MethodPatch, r.Method)
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&applied))
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{}`)),
+			}, nil
+		}),
+	}
+	s := &server{
+		apiServer:   "https://kubernetes.example.test",
+		bearerToken: "service-account-token",
+		client:      client,
+	}
+	req := provisionRequest{
+		Namespace:     "sallyom-claw",
+		Name:          "instance",
+		Provider:      "google",
+		OpenClawImage: "quay.io/example/openclaw:custom",
+	}
+
+	require.NoError(t, s.applyClaw(context.Background(), userIdentity{}, req))
+	image, _, _ := nestedString(applied, "spec", "image")
+	assert.Equal(t, "quay.io/example/openclaw:custom", image)
+}
+
+func TestHandleProvisionRejectsOpenClawImageWhenUserManagedDisabled(t *testing.T) {
+	s := &server{userManagedDisabled: true}
+	body := strings.NewReader(`{
+		"namespace": "sallyom-claw",
+		"name": "instance",
+		"provider": "openrouter",
+		"management": "operator",
+		"openClawImage": "quay.io/example/openclaw:custom"
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/provision", body)
+	req.Header.Set("X-Forwarded-User", "sallyom")
+	rr := httptest.NewRecorder()
+
+	s.handleProvision(rr, req)
+
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
+	assert.Contains(t, rr.Body.String(), "require user-managed config")
+}
+
+func TestHandleProvisionRejectsUserManagedWhenDisabled(t *testing.T) {
+	s := &server{userManagedDisabled: true, defaultManagement: "operator"}
+	body := strings.NewReader(`{
+		"namespace": "sallyom-claw",
+		"name": "instance",
+		"provider": "openrouter",
+		"management": "user"
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/provision", body)
+	req.Header.Set("X-Forwarded-User", "sallyom")
+	rr := httptest.NewRecorder()
+
+	s.handleProvision(rr, req)
+
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
+	assert.Contains(t, rr.Body.String(), "user-managed config is disabled")
+}
+
 func TestStateFromClawDefaultsConfigManagementToOperator(t *testing.T) {
 	state := stateFromClaw(map[string]any{
 		"metadata": map[string]any{"name": "instance"},
@@ -767,6 +841,18 @@ func TestStateFromClawDefaultsConfigManagementToOperator(t *testing.T) {
 	})
 
 	assert.Equal(t, "operator", state.Management)
+}
+
+func TestStateFromClawIncludesOpenClawImage(t *testing.T) {
+	state := stateFromClaw(map[string]any{
+		"metadata": map[string]any{"name": "instance"},
+		"spec": map[string]any{
+			"image":  "quay.io/example/openclaw:custom",
+			"config": map[string]any{},
+		},
+	})
+
+	assert.Equal(t, "quay.io/example/openclaw:custom", state.Image)
 }
 
 func TestStateFromClawIncludesProviderCredentialRefs(t *testing.T) {
@@ -903,7 +989,7 @@ func TestNormalizeConfigManagement(t *testing.T) {
 		want    string
 		wantErr bool
 	}{
-		"default":  {want: "operator"},
+		"default":  {want: "user"},
 		"operator": {value: "operator", want: "operator"},
 		"user":     {value: "user", want: "user"},
 		"trim":     {value: " User ", want: "user"},

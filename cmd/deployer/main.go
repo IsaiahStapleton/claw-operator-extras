@@ -20,6 +20,7 @@ import (
 	"embed"
 	"log"
 	"net/http"
+	"strings"
 )
 
 //go:embed static/*
@@ -69,14 +70,19 @@ func newServer() (*server, error) {
 	if err != nil {
 		return nil, err
 	}
+	userManagedDisabled := strings.EqualFold(getenv(disableUserConfigEnv, "false"), "true")
+	if userManagedDisabled && defaultConfigManagement == "user" {
+		defaultConfigManagement = "operator"
+	}
 
 	return &server{
-		apiServer:         apiServer,
-		bearerToken:       bearerToken,
-		impersonate:       impersonate,
-		namespaceSuffix:   getenv("CLAW_NAMESPACE_SUFFIX", defaultNSSuffix),
-		defaultManagement: defaultConfigManagement,
-		client:            client,
-		static:            http.FileServer(http.FS(staticFiles)),
+		apiServer:           apiServer,
+		bearerToken:         bearerToken,
+		impersonate:         impersonate,
+		namespaceSuffix:     getenv("CLAW_NAMESPACE_SUFFIX", defaultNSSuffix),
+		defaultManagement:   defaultConfigManagement,
+		userManagedDisabled: userManagedDisabled,
+		client:              client,
+		static:              http.FileServer(http.FS(staticFiles)),
 	}, nil
 }
