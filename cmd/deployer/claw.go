@@ -150,7 +150,7 @@ func stateFromClaw(claw map[string]any) stateResponse {
 	agentName := firstAgentName(claw)
 	management, _, _ := nestedString(claw, "spec", "config", "management")
 	if management == "" {
-		management = defaultManagement
+		management = crdDefaultManagement
 	}
 
 	return stateResponse{

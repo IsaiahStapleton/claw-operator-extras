@@ -720,7 +720,7 @@ func TestApplyClawWithoutModelSetsAgentNameOnly(t *testing.T) {
 	_, hasModel, _ := nestedValue(raw, "agents", "defaults", "model")
 	assert.False(t, hasModel, "blank model should not force a model config")
 	management, _, _ := nestedString(applied, "spec", "config", "management")
-	assert.Equal(t, "operator", management)
+	assert.Equal(t, "user", management)
 }
 
 func TestApplyClawSetsUserConfigManagement(t *testing.T) {
@@ -903,7 +903,7 @@ func TestNormalizeConfigManagement(t *testing.T) {
 		want    string
 		wantErr bool
 	}{
-		"default":  {want: "operator"},
+		"default":  {want: "user"},
 		"operator": {value: "operator", want: "operator"},
 		"user":     {value: "user", want: "user"},
 		"trim":     {value: " User ", want: "user"},

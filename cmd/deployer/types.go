@@ -19,18 +19,19 @@ package main
 import "net/http"
 
 const (
-	apiKeySecretKey    = "api-key"
-	gcpSecretKey       = "sa-key.json"
-	fieldManager       = "openclaw-deployer"
-	managedByLabel     = "app.kubernetes.io/managed-by"
-	managedByValue     = "openclaw-deployer"
-	instanceLabel      = "openclaw-deployer.redhat.com/instance"
-	providerLabel      = "openclaw-deployer.redhat.com/provider"
-	inClusterCAPath    = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
-	inClusterTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-	defaultListenAddr  = ":8080"
-	defaultNSSuffix    = "-claw"
-	defaultManagement  = "operator"
+	apiKeySecretKey      = "api-key"
+	gcpSecretKey         = "sa-key.json"
+	fieldManager         = "openclaw-deployer"
+	managedByLabel       = "app.kubernetes.io/managed-by"
+	managedByValue       = "openclaw-deployer"
+	instanceLabel        = "openclaw-deployer.redhat.com/instance"
+	providerLabel        = "openclaw-deployer.redhat.com/provider"
+	inClusterCAPath      = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+	inClusterTokenPath   = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+	defaultListenAddr    = ":8080"
+	defaultNSSuffix      = "-claw"
+	defaultManagement    = "user"
+	crdDefaultManagement = "operator"
 )
 
 type server struct {

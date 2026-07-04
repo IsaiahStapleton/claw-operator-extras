@@ -16,6 +16,7 @@ const state = {
   secretKey: "",
   gcpProject: localStorage.getItem("openclaw-deployer.gcpProject") || "",
   gcpLocation: localStorage.getItem("openclaw-deployer.gcpLocation") || "",
+  management: localStorage.getItem("openclaw-deployer.management") || "user",
   filesystemSource: localStorage.getItem("openclaw-deployer.filesystemSource") || "",
   gitURL: localStorage.getItem("openclaw-deployer.gitURL") || "",
   gitRef: localStorage.getItem("openclaw-deployer.gitRef") || "",
@@ -116,6 +117,7 @@ const els = {
   advancedCaret: document.getElementById("advanced-caret"),
   advancedBody: document.getElementById("advanced-body"),
   filesystemSource: document.getElementById("filesystemSource"),
+  management: document.getElementById("management"),
   filesystemSourceHint: document.getElementById("filesystem-source-hint"),
   workspaceSourceHelp: document.getElementById("workspace-source-help"),
   gitBox: document.getElementById("git-box"),
@@ -194,6 +196,7 @@ els.secretName.value = state.secretName;
 els.secretKey.value = state.secretKey;
 els.gcpProject.value = state.gcpProject;
 els.gcpLocation.value = state.gcpLocation || defaultGCPLocations[state.provider] || "";
+els.management.value = state.management;
 els.filesystemSource.value = state.filesystemSource;
 els.gitURL.value = state.gitURL;
 els.gitRef.value = state.gitRef;
@@ -214,13 +217,8 @@ function isGoogleVertex() {
   return googleVertexProviders.has(els.provider.value);
 }
 
-// Management is inferred: choosing a workspace source means the user manages
-// config; leaving it as "None" leaves the operator in control. This replaces
-// the former Config owner radio toggle while keeping the /api/provision
-// contract (which still accepts `management`) unchanged.
-function inferredManagement() {
-  const source = els.filesystemSource.value;
-  return source === "git" || source === "upload" ? "user" : "operator";
+function selectedManagement() {
+  return els.management.value === "operator" ? "operator" : "user";
 }
 
 function effectiveModel() {
@@ -342,6 +340,10 @@ async function init() {
       els.user.textContent = me.user;
       els.avatar.textContent = me.user.slice(0, 2).toUpperCase();
     }
+    if (!localStorage.getItem("openclaw-deployer.management") && me.defaultManagement) {
+      state.management = me.defaultManagement;
+      els.management.value = state.management;
+    }
   } catch (error) {
     renderAlert({ kind: "danger", title: "Couldn't load your session", body: error.message });
     return;
@@ -371,6 +373,7 @@ async function refresh() {
   state.secretKey = els.secretKey.value.trim();
   state.gcpProject = els.gcpProject.value.trim();
   state.gcpLocation = els.gcpLocation.value.trim();
+  state.management = selectedManagement();
   state.gitSecretName = els.gitSecretName.value.trim();
   localStorage.setItem("openclaw-deployer.namespace", state.namespace);
   localStorage.setItem("openclaw-deployer.name", state.selectedName);
@@ -378,6 +381,7 @@ async function refresh() {
   localStorage.setItem("openclaw-deployer.model", state.model);
   localStorage.setItem("openclaw-deployer.gcpProject", state.gcpProject);
   localStorage.setItem("openclaw-deployer.gcpLocation", state.gcpLocation);
+  localStorage.setItem("openclaw-deployer.management", state.management);
 
   setStatus("Checking status…");
   try {
@@ -399,6 +403,8 @@ function renderList(claws) {
   state.exists = Boolean(selected);
   state.ready = Boolean(selected && selected.ready);
   if (selected) {
+    state.management = selected.management || "operator";
+    els.management.value = state.management;
     state.currentSecretNames = selected.secretNames || [];
     state.currentCredentialRefs = selected.credentialRefs || [];
     if (selected.model) {
@@ -990,6 +996,7 @@ function renderReview() {
     ["Provider", providerNames.join(", ")],
     ["Model", effectiveModel() || "—"],
     ["API key", credential],
+    ["Config ownership", selectedManagement() === "user" ? "User-managed" : "Operator-managed"],
     ["Add-ons", state.integrations.length ? state.integrations.map((i) => integrationLabels[i.kind] || i.kind).join(", ") : "None"],
     ["Starting files", source === "git" ? "From Git" : source === "upload" ? "Uploaded folder" : "None"],
   ];
@@ -1092,7 +1099,8 @@ function generateYaml() {
     y += "  provider: " + els.provider.value + "\n";
     y += "  model: " + (effectiveModel() || "<provider default>") + "\n";
   }
-  y += "  configOwner: " + inferredManagement() + "\n";
+  y += "  config:\n";
+  y += "    management: " + selectedManagement() + "\n";
   if (vertex && (shouldConfigureAgent() || selectedProviderCredentialSupplied())) {
     y += "  vertex:\n";
     y += "    projectID: " + (els.gcpProject.value.trim() || "<gcp-project>") + "\n";
@@ -1306,7 +1314,7 @@ els.provision.addEventListener("click", async () => {
   const secretKey = els.secretKey.value.trim();
   const gcpProject = els.gcpProject.value.trim();
   const gcpLocation = els.gcpLocation.value.trim();
-  const management = inferredManagement();
+  const management = selectedManagement();
   const source = els.filesystemSource.value;
   const gitURL = els.gitURL.value.trim();
   const gitRef = els.gitRef.value.trim();
@@ -1373,6 +1381,7 @@ els.reset.addEventListener("click", () => {
   els.secretKey.value = "";
   els.gcpProject.value = "";
   els.gcpLocation.value = defaultGCPLocations.openrouter || "";
+  els.management.value = "user";
   els.apiKey.value = "";
   els.gcpCredentials.value = "";
   els.filesystemSource.value = "";
@@ -1385,6 +1394,7 @@ els.reset.addEventListener("click", () => {
   els.agentFiles.value = "";
   state.integrations = [];
   state.removedIntegrations = [];
+  state.management = "user";
   persistIntegrations();
   els.uploadName.hidden = true;
   renderErrors({});
@@ -1507,6 +1517,12 @@ els.filesystemSource.addEventListener("change", () => {
   state.filesystemSource = els.filesystemSource.value;
   localStorage.setItem("openclaw-deployer.filesystemSource", state.filesystemSource);
   renderFilesystemSource();
+  revalidate();
+});
+
+els.management.addEventListener("change", () => {
+  state.management = selectedManagement();
+  localStorage.setItem("openclaw-deployer.management", state.management);
   revalidate();
 });
 
