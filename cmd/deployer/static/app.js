@@ -1,6 +1,20 @@
-function storedIntegrations() {
+const initialNamespace = localStorage.getItem("openclaw-deployer.namespace") || "";
+const initialSelectedName = localStorage.getItem("openclaw-deployer.name") || "instance";
+
+function integrationStorageKey(namespace, name) {
+  if (!namespace || !name) {
+    return "";
+  }
+  return `openclaw-deployer.integrations.${namespace}.${name}`;
+}
+
+function storedIntegrations(namespace, name) {
+  const key = integrationStorageKey(namespace, name);
+  if (!key) {
+    return [];
+  }
   try {
-    const parsed = JSON.parse(localStorage.getItem("openclaw-deployer.integrations") || "[]");
+    const parsed = JSON.parse(localStorage.getItem(key) || "[]");
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
@@ -8,9 +22,9 @@ function storedIntegrations() {
 }
 
 const state = {
-  namespace: localStorage.getItem("openclaw-deployer.namespace") || "",
+  namespace: initialNamespace,
   provider: localStorage.getItem("openclaw-deployer.provider") || "openrouter",
-  selectedName: localStorage.getItem("openclaw-deployer.name") || "instance",
+  selectedName: initialSelectedName,
   model: localStorage.getItem("openclaw-deployer.model") || "",
   openClawImage: "",
   secretName: "",
@@ -23,7 +37,9 @@ const state = {
   gitRef: localStorage.getItem("openclaw-deployer.gitRef") || "",
   gitPath: localStorage.getItem("openclaw-deployer.gitPath") || "",
   gitSecretName: "",
-  integrations: storedIntegrations(),
+  integrations: storedIntegrations(initialNamespace, initialSelectedName),
+  integrationScope: integrationStorageKey(initialNamespace, initialSelectedName),
+  integrationsDirty: false,
   removedIntegrations: [],
   theme: localStorage.getItem("openclaw-deployer.theme") === "dark" ? "dark" : "light",
   claws: [],
@@ -100,12 +116,14 @@ const els = {
   namespace: document.getElementById("namespace"),
   namespaceOptions: document.getElementById("namespace-options"),
   clawName: document.getElementById("clawName"),
+  clawNameOptions: document.getElementById("claw-name-options"),
   provider: document.getElementById("provider"),
   model: document.getElementById("model"),
   modelOptions: document.getElementById("model-options"),
   defaultModel: document.getElementById("default-model"),
   openClawImage: document.getElementById("openClawImage"),
   openClawImageField: document.getElementById("openclaw-image-field"),
+  managementHint: document.getElementById("management-hint"),
   vertexBox: document.getElementById("vertex-box"),
   gcpProject: document.getElementById("gcpProject"),
   gcpLocation: document.getElementById("gcpLocation"),
@@ -349,6 +367,9 @@ async function init() {
     state.userManagedEnabled = Boolean(me.userManagedEnabled);
     els.openClawImageField.hidden = !state.userManagedEnabled;
     els.management.disabled = !state.userManagedEnabled;
+    els.managementHint.textContent = state.userManagedEnabled
+      ? "User-managed is the default. The operator seeds initial provider/model config, then UI, CLI, plugin, skill, MCP, and agent config edits persist on the PVC. Operator-managed keeps reconciling runtime config from this form and the Claw CR."
+      : "User-managed config is disabled by this deployer. New and updated Claws use operator-managed runtime config, so CR fields from this form keep applying.";
     if (!state.userManagedEnabled) {
       els.openClawImage.value = "";
       state.openClawImage = "";
@@ -380,6 +401,7 @@ async function loadNamespaceSuggestions() {
 }
 
 async function refresh() {
+  const previousNamespace = state.namespace;
   state.namespace = els.namespace.value.trim();
   state.selectedName = els.clawName.value.trim() || "instance";
   state.provider = els.provider.value;
@@ -402,19 +424,38 @@ async function refresh() {
   setStatus("Checking status…");
   try {
     const current = await api("/api/claws");
-    renderList(current.claws || []);
+    renderList(current.claws || [], { namespaceChanged: state.namespace !== previousNamespace });
   } catch (error) {
-    renderList([]);
+    renderList([], { namespaceChanged: state.namespace !== previousNamespace });
     renderAlert({ kind: "danger", title: "Couldn't list instances", body: error.message });
   }
 }
 
-function renderList(claws) {
+function renderList(claws, opts = {}) {
   state.claws = claws;
   renderNamespaceOptions(claws);
+  const namespaceClaws = state.namespace
+    ? claws.filter((claw) => (claw.namespace || state.namespace) === state.namespace)
+    : claws;
+  renderClawNameOptions(namespaceClaws);
+
+  if (opts.namespaceChanged && state.namespace) {
+    const names = namespaceClaws.map((claw) => claw.name).filter(Boolean).sort();
+    if (names.length > 0 && !names.includes(state.selectedName)) {
+      state.selectedName = names[0];
+      els.clawName.value = state.selectedName;
+      localStorage.setItem("openclaw-deployer.name", state.selectedName);
+    } else if (names.length === 0 && state.selectedName !== "instance") {
+      state.selectedName = "instance";
+      els.clawName.value = state.selectedName;
+      localStorage.setItem("openclaw-deployer.name", state.selectedName);
+    }
+  }
+  loadIntegrationsForSelection();
+
   let selected = null;
   if (state.namespace) {
-    selected = claws.find((claw) => (claw.namespace || state.namespace) === state.namespace && claw.name === state.selectedName) || null;
+    selected = namespaceClaws.find((claw) => claw.name === state.selectedName) || null;
   }
   state.exists = Boolean(selected);
   state.ready = Boolean(selected && selected.ready);
@@ -442,6 +483,9 @@ function renderList(claws) {
   } else {
     state.currentSecretNames = [];
     state.currentCredentialRefs = [];
+    if (!state.integrationsDirty && state.integrations.length > 0) {
+      clearIntegrationsForSelection();
+    }
     if (!els.openClawImage.matches(":focus")) {
       els.openClawImage.value = "";
       state.openClawImage = "";
@@ -485,6 +529,16 @@ function renderNamespaceOptions(claws) {
     const option = document.createElement("option");
     option.value = namespace;
     els.namespaceOptions.appendChild(option);
+  }
+}
+
+function renderClawNameOptions(claws) {
+  const names = [...new Set(claws.map((claw) => claw.name).filter(Boolean))].sort();
+  els.clawNameOptions.innerHTML = "";
+  for (const name of names) {
+    const option = document.createElement("option");
+    option.value = name;
+    els.clawNameOptions.appendChild(option);
   }
 }
 
@@ -807,13 +861,50 @@ function typedChannelConfigJSON(kind) {
 }
 
 function persistIntegrations() {
+  const key = integrationStorageKey(state.namespace, state.selectedName);
+  localStorage.removeItem("openclaw-deployer.integrations");
+  if (!key) {
+    return;
+  }
   const safe = state.integrations.map(({ secretValue, appSecretValue, ...integration }) => integration);
-  localStorage.setItem("openclaw-deployer.integrations", JSON.stringify(safe));
+  if (safe.length === 0) {
+    localStorage.removeItem(key);
+    return;
+  }
+  localStorage.setItem(key, JSON.stringify(safe));
+}
+
+function loadIntegrationsForSelection() {
+  const scope = integrationStorageKey(state.namespace, state.selectedName);
+  if (scope === state.integrationScope) {
+    return;
+  }
+  state.integrationScope = scope;
+  state.integrations = storedIntegrations(state.namespace, state.selectedName);
+  state.removedIntegrations = [];
+  state.integrationsDirty = false;
+  renderIntegrations();
+}
+
+function clearIntegrationsForSelection() {
+  state.integrations = [];
+  state.removedIntegrations = [];
+  state.integrationsDirty = false;
+  persistIntegrations();
+  renderIntegrations();
+}
+
+function clearStoredIntegrations(namespace, name) {
+  const key = integrationStorageKey(namespace, name);
+  if (key) {
+    localStorage.removeItem(key);
+  }
 }
 
 function renderIntegrations() {
   els.integrationList.innerHTML = "";
   if (state.integrations.length === 0) {
+    setIntegrationOpen(false);
     return;
   }
   for (const [idx, integration] of state.integrations.entries()) {
@@ -835,6 +926,7 @@ function renderIntegrations() {
     remove.addEventListener("click", () => {
       state.removedIntegrations.push(integration);
       state.integrations.splice(idx, 1);
+      state.integrationsDirty = true;
       persistIntegrations();
       renderIntegrations();
       renderReview();
@@ -1391,6 +1483,7 @@ els.provision.addEventListener("click", async () => {
       delete integration.appSecretValue;
     }
     state.removedIntegrations = [];
+    state.integrationsDirty = false;
     persistIntegrations();
     els.agentFiles.value = "";
     state.selectedName = current.name || name;
@@ -1404,6 +1497,8 @@ els.provision.addEventListener("click", async () => {
 });
 
 els.reset.addEventListener("click", () => {
+  const previousNamespace = state.namespace;
+  const previousName = state.selectedName;
   state.submitted = false;
   els.namespace.value = "";
   els.clawName.value = "instance";
@@ -1425,10 +1520,15 @@ els.reset.addEventListener("click", () => {
   els.gitUsername.value = "";
   els.gitPassword.value = "";
   els.agentFiles.value = "";
+  state.namespace = "";
+  state.selectedName = "instance";
   state.integrations = [];
   state.removedIntegrations = [];
+  state.integrationScope = integrationStorageKey("", "instance");
+  state.integrationsDirty = false;
   state.management = "user";
   state.openClawImage = "";
+  clearStoredIntegrations(previousNamespace, previousName);
   persistIntegrations();
   els.uploadName.hidden = true;
   renderErrors({});
@@ -1464,6 +1564,10 @@ async function deleteClaw(namespace, name) {
   setStatus(`Deleting ${namespace}/${name}…`);
   try {
     await api(`/api/claw?namespace=${encodeURIComponent(namespace)}&name=${encodeURIComponent(name)}`, { method: "DELETE" });
+    clearStoredIntegrations(namespace, name);
+    if (namespace === state.namespace && name === state.selectedName) {
+      clearIntegrationsForSelection();
+    }
     await refresh();
   } catch (error) {
     setStatus(error.message, true);
@@ -1587,6 +1691,7 @@ els.integrationAdd.addEventListener("click", () => {
   try {
     const integration = buildIntegrationFromForm();
     state.integrations.push(integration);
+    state.integrationsDirty = true;
     persistIntegrations();
     clearIntegrationSecretInputs();
     setIntegrationOpen(true);

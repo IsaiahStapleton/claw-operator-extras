@@ -64,7 +64,8 @@
               </div>
               <div class="field">
                 <label for="clawName">Name <span class="req">*</span></label>
-                <input id="clawName" name="clawName" value="instance" aria-describedby="hint-clawName">
+                <input id="clawName" name="clawName" value="instance" list="claw-name-options" aria-describedby="hint-clawName">
+                <datalist id="claw-name-options"></datalist>
                 <p class="field__hint" id="hint-clawName">Lowercase letters, numbers, and dashes — for example <code>my-assistant</code>.</p>
                 <p class="field__error" id="err-clawName" hidden></p>
               </div>
@@ -347,7 +348,7 @@
                   <option value="user">User-managed — OpenClaw owns runtime config</option>
                   <option value="operator">Operator-managed — CR fields keep applying</option>
                 </select>
-                <p class="field__hint">User-managed is the default. The operator seeds initial provider/model config, then UI, CLI, plugin, skill, MCP, and agent config edits persist on the PVC. Operator-managed keeps reconciling runtime config from this form and the Claw CR.</p>
+                <p class="field__hint" id="management-hint">User-managed is the default. The operator seeds initial provider/model config, then UI, CLI, plugin, skill, MCP, and agent config edits persist on the PVC. Operator-managed keeps reconciling runtime config from this form and the Claw CR.</p>
               </div>
               <div class="field" id="openclaw-image-field" hidden>
                 <label for="openClawImage">OpenClaw image override <span class="muted">(optional)</span></label>
