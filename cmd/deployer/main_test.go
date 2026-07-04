@@ -439,6 +439,62 @@ func TestHandleProvisionExistingClawSkipsGCPValidationWithoutCredentialInput(t *
 	assert.True(t, clawApplied)
 }
 
+func TestHandleProvisionAllowsRemovedGCPModelProviderIdentityOnly(t *testing.T) {
+	clawApplied := false
+	var applied map[string]any
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			body := `{}`
+			if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/claws/instance") {
+				body = `{
+					"metadata":{"namespace":"sallyom-claw","name":"instance"},
+					"spec": {
+						"credentials": [
+							{
+								"name": "google-vertex",
+								"provider": "google",
+								"type": "gcp",
+								"secretRef": [{"name": "shared-provider-secret", "key": "gcp_service_account"}]
+							},
+							{
+								"name": "openai",
+								"provider": "openai",
+								"secretRef": [{"name": "shared-provider-secret", "key": "openai_api_key"}]
+							}
+						]
+					}
+				}`
+			}
+			if r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/claws/instance") {
+				clawApplied = true
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&applied))
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		}),
+	}
+	s := &server{
+		apiServer:   "https://kubernetes.example.test",
+		bearerToken: "service-account-token",
+		client:      client,
+	}
+	body := `{"namespace":"sallyom-claw","name":"instance","provider":"openai","removedModelProviders":[{"provider":"google-vertex"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/provision", strings.NewReader(body))
+	req.Header.Set("X-Forwarded-User", "sallyom")
+	rec := httptest.NewRecorder()
+
+	s.handleProvision(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.True(t, clawApplied)
+	credentials, _, _ := nestedSlice(applied, "spec", "credentials")
+	require.Len(t, credentials, 1)
+	assert.Equal(t, "openai", credentials[0].(map[string]any)["name"])
+}
+
 func TestHandleDeleteUsesRequestedNamespace(t *testing.T) {
 	deleted := map[string]bool{}
 	client := &http.Client{
@@ -760,6 +816,130 @@ func TestApplyClawSetsUserConfigManagement(t *testing.T) {
 	assert.Equal(t, "user", management)
 }
 
+func TestApplyClawAddsMultipleModelProviders(t *testing.T) {
+	var applied map[string]any
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if r.Method == http.MethodGet {
+				return &http.Response{
+					StatusCode: http.StatusNotFound,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"message":"not found"}`)),
+				}, nil
+			}
+			require.Equal(t, http.MethodPatch, r.Method)
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&applied))
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{}`)),
+			}, nil
+		}),
+	}
+	s := &server{
+		apiServer:   "https://kubernetes.example.test",
+		bearerToken: "service-account-token",
+		client:      client,
+	}
+	req := provisionRequest{
+		Namespace: "sallyom-claw",
+		Name:      "instance",
+		Provider:  "openrouter",
+		AgentName: "Instance",
+		ModelProviders: []modelProviderRequest{
+			{Provider: "openai", Model: "openai/gpt-5.5", SecretName: "shared-provider-secret", SecretKey: "openai_api_key"},
+			{Provider: "openrouter", Model: "openrouter/auto", SecretName: "shared-provider-secret", SecretKey: "openrouter_api_key"},
+		},
+	}
+
+	require.NoError(t, s.applyClaw(context.Background(), userIdentity{}, req))
+	credentials, _, _ := nestedSlice(applied, "spec", "credentials")
+	require.Len(t, credentials, 2)
+	models, _, _ := nestedMap(applied, "spec", "config", "raw", "agents", "defaults", "models")
+	assert.Contains(t, models, "openai/gpt-5.5")
+	assert.Contains(t, models, "openrouter/auto")
+}
+
+func TestApplyClawRemovesModelProviderReferencesOnly(t *testing.T) {
+	var applied map[string]any
+	existing := `{
+		"metadata": {"name": "instance", "namespace": "sallyom-claw"},
+		"spec": {
+			"credentials": [
+				{
+					"name": "openai",
+					"provider": "openai",
+					"secretRef": [{"name": "shared-provider-secret", "key": "openai_api_key"}]
+				},
+				{
+					"name": "openrouter",
+					"provider": "openrouter",
+					"secretRef": [{"name": "shared-provider-secret", "key": "openrouter_api_key"}]
+				}
+			],
+			"config": {
+				"raw": {
+					"agents": {
+						"defaults": {
+							"model": {"primary": "openai/gpt-5.5"},
+							"models": {
+								"openai/gpt-5.5": {"alias": "openai/gpt-5.5"},
+								"openrouter/auto": {"alias": "openrouter/auto"}
+							}
+						}
+					}
+				}
+			}
+		}
+	}`
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			require.NotEqual(t, http.MethodDelete, r.Method, "removing a provider must not delete Kubernetes Secrets")
+			if r.Method == http.MethodGet {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(existing)),
+				}, nil
+			}
+			require.Equal(t, http.MethodPatch, r.Method)
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&applied))
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{}`)),
+			}, nil
+		}),
+	}
+	s := &server{
+		apiServer:   "https://kubernetes.example.test",
+		bearerToken: "service-account-token",
+		client:      client,
+	}
+	req := provisionRequest{
+		Namespace: "sallyom-claw",
+		Name:      "instance",
+		Provider:  "openrouter",
+		AgentName: "Instance",
+		ModelProviders: []modelProviderRequest{
+			{Provider: "openrouter", Model: "openrouter/auto", SecretName: "shared-provider-secret", SecretKey: "openrouter_api_key"},
+		},
+		RemovedModelProviders: []modelProviderRequest{
+			{Provider: "openai"},
+		},
+	}
+
+	require.NoError(t, s.applyClaw(context.Background(), userIdentity{}, req))
+	credentials, _, _ := nestedSlice(applied, "spec", "credentials")
+	require.Len(t, credentials, 1)
+	assert.Equal(t, "openrouter", credentials[0].(map[string]any)["name"])
+	models, _, _ := nestedMap(applied, "spec", "config", "raw", "agents", "defaults", "models")
+	assert.NotContains(t, models, "openai/gpt-5.5")
+	assert.Contains(t, models, "openrouter/auto")
+	_, hasPrimary, _ := nestedValue(applied, "spec", "config", "raw", "agents", "defaults", "model")
+	assert.False(t, hasPrimary)
+}
+
 func TestApplyClawSetsOpenClawImage(t *testing.T) {
 	var applied map[string]any
 	client := &http.Client{
@@ -894,6 +1074,59 @@ func TestStateFromClawIncludesProviderCredentialRefs(t *testing.T) {
 	assert.Equal(t, []string{"shared-provider-secret"}, state.SecretNames)
 }
 
+func TestStateFromClawIncludesConfiguredModelProvidersAndIntegrations(t *testing.T) {
+	state := stateFromClaw(map[string]any{
+		"metadata": map[string]any{"name": "instance"},
+		"spec": map[string]any{
+			"config": map[string]any{"raw": map[string]any{"agents": map[string]any{"defaults": map[string]any{
+				"models": map[string]any{
+					"openai/gpt-5.5":  map[string]any{"alias": "GPT"},
+					"openrouter/auto": map[string]any{"alias": "Auto"},
+				},
+			}}}},
+			"credentials": []any{
+				map[string]any{
+					"name":     "openai",
+					"provider": "openai",
+					"secretRef": []any{
+						map[string]any{"name": "shared-provider-secret", "key": "openai_api_key"},
+					},
+				},
+				map[string]any{
+					"name":    "telegram",
+					"channel": "telegram",
+					"secretRef": []any{
+						map[string]any{"name": "telegram-secret", "key": "bot-token"},
+					},
+				},
+			},
+			"webSearch": map[string]any{
+				"provider":  "brave",
+				"secretRef": map[string]any{"name": "brave-secret", "key": "api-key"},
+			},
+			"auth": map[string]any{
+				"mode":              "password",
+				"passwordSecretRef": map[string]any{"name": "password-secret", "key": "password"},
+			},
+			"repoAccess": map[string]any{"github": map[string]any{
+				"secretRef": map[string]any{"name": "github-secret", "key": "token"},
+				"exposeEnv": true,
+			}},
+		},
+	})
+
+	require.Len(t, state.ModelProviders, 1)
+	assert.Equal(t, "openai", state.ModelProviders[0].Provider)
+	assert.Equal(t, "openai/gpt-5.5", state.ModelProviders[0].Model)
+	assert.Equal(t, "shared-provider-secret", state.ModelProviders[0].SecretName)
+	assert.ElementsMatch(t, []string{"channel-telegram", "websearch-brave", "auth-password", "github-pat"}, integrationKinds(state.Integrations))
+	body, err := json.Marshal(state)
+	require.NoError(t, err)
+	assert.NotContains(t, string(body), "apiKey")
+	assert.NotContains(t, string(body), "secretValue")
+	assert.NotContains(t, string(body), "appSecretValue")
+}
+
 func TestProviderCredentialForVertex(t *testing.T) {
 	req := provisionRequest{
 		Name:        "instance",
@@ -1023,13 +1256,51 @@ func TestAgentNameFromClawName(t *testing.T) {
 }
 
 func TestApplyAgentConfig(t *testing.T) {
-	raw := applyAgentConfig(map[string]any{}, "SallyBot", "openrouter/anthropic/claude-sonnet-4-6")
+	raw := applyAgentConfig(map[string]any{}, "SallyBot", "openrouter/anthropic/claude-sonnet-4-6", nil, nil)
 	primary, _, _ := nestedString(raw, "agents", "defaults", "model", "primary")
 	assert.Equal(t, "openrouter/anthropic/claude-sonnet-4-6", primary)
 	agents, _, _ := nestedSlice(raw, "agents", "list")
 	require.Len(t, agents, 1)
 	first := agents[0].(map[string]any)
 	assert.Equal(t, "SallyBot", first["name"])
+}
+
+func TestApplyAgentConfigAddsAndRemovesModelAliases(t *testing.T) {
+	raw := map[string]any{
+		"agents": map[string]any{
+			"defaults": map[string]any{
+				"model": map[string]any{"primary": "openrouter/old-model"},
+				"models": map[string]any{
+					"openrouter/old-model": map[string]any{"alias": "Old"},
+					"custom/runtime-model": map[string]any{"alias": "Runtime"},
+				},
+			},
+		},
+	}
+
+	next := applyAgentConfig(
+		raw,
+		"SallyBot",
+		"anthropic/claude-sonnet-4-6",
+		[]string{"openai/gpt-5.5"},
+		[]string{"openrouter/old-model"},
+	)
+
+	_, hasRemoved, _ := nestedMap(next, "agents", "defaults", "models", "openrouter/old-model")
+	assert.False(t, hasRemoved)
+
+	models, ok, _ := nestedMap(next, "agents", "defaults", "models")
+	require.True(t, ok)
+	assert.Equal(t, map[string]any{"alias": "openai/gpt-5.5"}, models["openai/gpt-5.5"])
+	assert.Equal(t, map[string]any{"alias": "anthropic/claude-sonnet-4-6"}, models["anthropic/claude-sonnet-4-6"])
+	assert.Equal(t, map[string]any{"alias": "Runtime"}, models["custom/runtime-model"])
+
+	primary, _, _ := nestedString(next, "agents", "defaults", "model", "primary")
+	assert.Equal(t, "anthropic/claude-sonnet-4-6", primary)
+	agents, _, _ := nestedSlice(next, "agents", "list")
+	require.Len(t, agents, 1)
+	defaultAgent := agents[0].(map[string]any)
+	assert.Equal(t, map[string]any{"primary": "anthropic/claude-sonnet-4-6"}, defaultAgent["model"])
 }
 
 func TestApplyAgentConfigPreservesUserAgents(t *testing.T) {
@@ -1047,7 +1318,7 @@ func TestApplyAgentConfigPreservesUserAgents(t *testing.T) {
 			},
 		},
 	}
-	next := applyAgentConfig(raw, "SallyBot", "openrouter/auto")
+	next := applyAgentConfig(raw, "SallyBot", "openrouter/auto", nil, nil)
 	agents, _, _ := nestedSlice(next, "agents", "list")
 	require.Len(t, agents, 2)
 	custom := agents[0].(map[string]any)
@@ -1671,7 +1942,7 @@ func TestApplyAgentConfigClearsStaleModelWhenEmpty(t *testing.T) {
 			},
 		},
 	}
-	next := applyAgentConfig(raw, "Instance", "")
+	next := applyAgentConfig(raw, "Instance", "", nil, nil)
 
 	_, hasModel, _ := nestedValue(next, "agents", "defaults", "model")
 	assert.False(t, hasModel, "defaults.model should be cleared")
@@ -1700,4 +1971,12 @@ func TestReadyCondition(t *testing.T) {
 	assert.True(t, ready)
 	assert.Equal(t, "Ready", reason)
 	assert.NotEmpty(t, message)
+}
+
+func integrationKinds(integrations []integrationResponse) []string {
+	kinds := make([]string, 0, len(integrations))
+	for _, integration := range integrations {
+		kinds = append(kinds, integration.Kind)
+	}
+	return kinds
 }

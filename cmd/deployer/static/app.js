@@ -26,6 +26,8 @@ const state = {
   provider: localStorage.getItem("openclaw-deployer.provider") || "openrouter",
   selectedName: initialSelectedName,
   model: localStorage.getItem("openclaw-deployer.model") || "",
+  modelProviders: [],
+  removedModelProviders: [],
   openClawImage: "",
   secretName: "",
   secretKey: "",
@@ -120,6 +122,8 @@ const els = {
   provider: document.getElementById("provider"),
   model: document.getElementById("model"),
   modelOptions: document.getElementById("model-options"),
+  modelProviderAdd: document.getElementById("model-provider-add"),
+  modelProviderList: document.getElementById("model-provider-list"),
   defaultModel: document.getElementById("default-model"),
   openClawImage: document.getElementById("openClawImage"),
   openClawImageField: document.getElementById("openclaw-image-field"),
@@ -228,6 +232,7 @@ els.gitSecretName.value = state.gitSecretName;
 
 applyTheme(state.theme);
 renderModelOptions();
+renderModelProviders();
 renderCredentialFields();
 renderFilesystemSource();
 renderIntegrationFields();
@@ -267,9 +272,13 @@ function credentialProviderForProvider(provider) {
 }
 
 function defaultSecretName() {
+  return defaultSecretNameForProvider(els.provider.value);
+}
+
+function defaultSecretNameForProvider(provider) {
   const name = els.clawName.value.trim() || "instance";
-  const credentialName = credentialNameForProvider(els.provider.value);
-  if (isGoogleVertex()) {
+  const credentialName = credentialNameForProvider(provider);
+  if (googleVertexProviders.has(provider)) {
     return `openclaw-${name}-${credentialName}-gcp`;
   }
   return `openclaw-${name}-${credentialName}-api-key`;
@@ -280,7 +289,11 @@ function effectiveSecretName() {
 }
 
 function expectedSecretKey() {
-  return isGoogleVertex() ? "sa-key.json" : "api-key";
+  return expectedSecretKeyForProvider(els.provider.value);
+}
+
+function expectedSecretKeyForProvider(provider) {
+  return googleVertexProviders.has(provider) ? "sa-key.json" : "api-key";
 }
 
 function effectiveSecretKey() {
@@ -368,7 +381,7 @@ async function init() {
     els.openClawImageField.hidden = !state.userManagedEnabled;
     els.management.disabled = !state.userManagedEnabled;
     els.managementHint.textContent = state.userManagedEnabled
-      ? "User-managed is the default. The operator seeds initial provider/model config, then UI, CLI, plugin, skill, MCP, and agent config edits persist on the PVC. Operator-managed keeps reconciling runtime config from this form and the Claw CR."
+      ? "User-managed is the default. Proxy-backed providers and add-ons stay managed through this form and the Claw CR; ordinary OpenClaw runtime config edits from the UI, CLI, plugins, skills, MCPs, and agents persist on the PVC. Operator-managed keeps reconciling runtime config from this form and the Claw CR."
       : "User-managed config is disabled by this deployer. New and updated Claws use operator-managed runtime config, so CR fields from this form keep applying.";
     if (!state.userManagedEnabled) {
       els.openClawImage.value = "";
@@ -464,6 +477,13 @@ function renderList(claws, opts = {}) {
     els.management.value = state.management;
     state.currentSecretNames = selected.secretNames || [];
     state.currentCredentialRefs = selected.credentialRefs || [];
+    if (!state.integrationsDirty) {
+      state.integrations = selected.integrations || [];
+      state.modelProviders = selected.modelProviders || [];
+      state.removedModelProviders = [];
+      renderIntegrations();
+      renderModelProviders();
+    }
     if (selected.model) {
       els.model.value = selected.model;
       state.model = selected.model;
@@ -691,6 +711,80 @@ function renderModelOptions() {
   els.defaultModel.textContent = modelDefaults[els.provider.value] || "—";
 }
 
+function buildModelProviderFromForm() {
+  const vertex = isGoogleVertex();
+  const provider = els.provider.value;
+  const model = els.model.value.trim() || modelDefaults[provider] || "";
+  const apiKey = (vertex ? els.gcpCredentials.value : els.apiKey.value).trim();
+  const secretName = els.secretName.value.trim();
+  if (!apiKey && !secretName) {
+    throw new Error(vertex ? "Add a service account JSON or Secret name before adding this provider." : "Add an API key or Secret name before adding this provider.");
+  }
+  if (vertex && apiKey && !isSupportedGCPKey(apiKey)) {
+    throw new Error('This does not look like a supported GCP key.');
+  }
+  return {
+    provider,
+    model,
+    apiKey,
+    secretName,
+    secretKey: els.secretKey.value.trim(),
+    gcpProject: els.gcpProject.value.trim(),
+    gcpLocation: els.gcpLocation.value.trim(),
+  };
+}
+
+function modelProviderAlreadyConfigured(provider) {
+  if (state.modelProviders.some((item) => item.provider === provider)) {
+    return true;
+  }
+  if (!state.exists || state.removedModelProviders.some((item) => item.provider === provider)) {
+    return false;
+  }
+  return state.currentCredentialRefs.some((ref) => isModelProviderCredentialRef(ref) && credentialRefMatchesProvider(ref, provider));
+}
+
+function clearModelProviderCredentialForm() {
+  els.model.value = "";
+  els.apiKey.value = "";
+  els.gcpCredentials.value = "";
+  els.secretName.value = "";
+  els.secretKey.value = "";
+}
+
+function renderModelProviders() {
+  els.modelProviderList.innerHTML = "";
+  if (state.modelProviders.length === 0) {
+    return;
+  }
+  for (const [idx, item] of state.modelProviders.entries()) {
+    const row = document.createElement("div");
+    row.className = "integration-item";
+    const main = document.createElement("div");
+    main.className = "integration-item__main";
+    const title = document.createElement("p");
+    title.className = "integration-item__title";
+    title.textContent = providerLabels[item.provider] || item.provider;
+    const meta = document.createElement("p");
+    meta.className = "integration-item__meta";
+    meta.textContent = `${item.model || "provider default"} · ${item.secretName || "new key"}`;
+    main.append(title, meta);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "btn btn--sm btn--danger";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => {
+      state.removedModelProviders.push(item);
+      state.modelProviders.splice(idx, 1);
+      state.integrationsDirty = true;
+      renderModelProviders();
+      renderReview();
+    });
+    row.append(main, remove);
+    els.modelProviderList.appendChild(row);
+  }
+}
+
 function renderCredentialFields() {
   const vertex = isGoogleVertex();
   els.vertexBox.hidden = !vertex;
@@ -881,17 +975,23 @@ function loadIntegrationsForSelection() {
   }
   state.integrationScope = scope;
   state.integrations = storedIntegrations(state.namespace, state.selectedName);
+  state.modelProviders = [];
   state.removedIntegrations = [];
+  state.removedModelProviders = [];
   state.integrationsDirty = false;
   renderIntegrations();
+  renderModelProviders();
 }
 
 function clearIntegrationsForSelection() {
-  state.integrations = [];
-  state.removedIntegrations = [];
-  state.integrationsDirty = false;
-  persistIntegrations();
-  renderIntegrations();
+	state.integrations = [];
+	state.modelProviders = [];
+	state.removedIntegrations = [];
+	state.removedModelProviders = [];
+	state.integrationsDirty = false;
+	persistIntegrations();
+	renderIntegrations();
+	renderModelProviders();
 }
 
 function clearStoredIntegrations(namespace, name) {
@@ -1109,6 +1209,10 @@ function renderReview() {
   const providerNames = providerCredentialRefs.length > 0
     ? [...new Set(providerCredentialRefs.map((ref) => credentialRefLabel(ref)))]
     : [providerLabels[els.provider.value] || els.provider.value];
+  const modelProviderLabels = state.modelProviders.map((item) => {
+    const label = providerLabels[item.provider] || item.provider;
+    return `${label}${item.model ? ` (${item.model})` : ""}`;
+  });
   const rows = [
     ["Project", els.namespace.value.trim() || "—"],
     ["Name", els.clawName.value.trim() || "—"],
@@ -1116,6 +1220,7 @@ function renderReview() {
     ["Model", effectiveModel() || "—"],
     ["OpenClaw image", state.userManagedEnabled && els.openClawImage.value.trim() ? els.openClawImage.value.trim() : "Operator default"],
     ["API key", credential],
+    ["Model providers", modelProviderLabels.length ? modelProviderLabels.join(", ") : "None"],
     ["Config ownership", selectedManagement() === "user" ? "User-managed" : "Operator-managed"],
     ["Add-ons", state.integrations.length ? state.integrations.map((i) => integrationLabels[i.kind] || i.kind).join(", ") : "None"],
     ["Starting files", source === "git" ? "From Git" : source === "upload" ? "Uploaded folder" : "None"],
@@ -1165,7 +1270,7 @@ function validate() {
   if (!els.clawName.value.trim()) errs.clawName = "Give your OpenClaw a name.";
   const cred = (vertex ? els.gcpCredentials.value : els.apiKey.value).trim();
   const secretName = els.secretName.value.trim();
-  if (!cred && !secretName && !state.exists) {
+  if (!cred && !secretName && state.modelProviders.length === 0 && !state.exists) {
     errs.credential = vertex ? "Paste your service account JSON key, or use an existing Secret." : "Paste your API key, or use an existing Secret.";
   } else if (vertex && cred && !isSupportedGCPKey(cred)) {
     errs.credential = 'This doesn\'t look like a service account key — expected JSON with type "service_account" or "authorized_user".';
@@ -1230,6 +1335,16 @@ function generateYaml() {
     y += "    location: " + (els.gcpLocation.value.trim() || "<region>") + "\n";
   }
   const providerCredentials = modelProviderCredentialRefsForPreview();
+  for (const item of state.modelProviders) {
+    providerCredentials.push({
+      credential: credentialNameForProvider(item.provider),
+      provider: credentialProviderForProvider(item.provider),
+      type: googleVertexProviders.has(item.provider) ? "gcp" : "",
+      name: item.secretName || defaultSecretNameForProvider(item.provider),
+      key: item.secretKey || expectedSecretKeyForProvider(item.provider),
+      action: item.secretName ? "existing" : "create",
+    });
+  }
   const credentialIntegrations = state.integrations.filter((i) => i.kind.startsWith("channel-") || i.kind === "custom-credential");
   if (providerCredentials.length || credentialIntegrations.length) {
     y += "  credentials:\n";
@@ -1448,6 +1563,8 @@ els.provision.addEventListener("click", async () => {
   const gitPassword = els.gitPassword.value;
   const integrations = state.integrations;
   const removedIntegrations = state.removedIntegrations;
+  const modelProviders = state.modelProviders;
+  const removedModelProviders = state.removedModelProviders;
 
   if (source === "upload" && els.agentFiles.files.length === 0) {
     setAdvancedOpen(true);
@@ -1472,7 +1589,7 @@ els.provision.addEventListener("click", async () => {
       body: JSON.stringify({
         namespace, name, provider, configureAgent, model, openClawImage, apiKey, secretName, secretKey, gcpProject, gcpLocation, management,
         filesystemSource, gitURL, gitRef, gitPath, gitSecretName, gitUsername, gitPassword, configMapName,
-        integrations, removedIntegrations,
+        integrations, removedIntegrations, modelProviders, removedModelProviders,
       }),
     });
     els.apiKey.value = "";
@@ -1482,7 +1599,11 @@ els.provision.addEventListener("click", async () => {
       delete integration.secretValue;
       delete integration.appSecretValue;
     }
+    for (const modelProvider of state.modelProviders) {
+      delete modelProvider.apiKey;
+    }
     state.removedIntegrations = [];
+    state.removedModelProviders = [];
     state.integrationsDirty = false;
     persistIntegrations();
     els.agentFiles.value = "";
@@ -1523,7 +1644,9 @@ els.reset.addEventListener("click", () => {
   state.namespace = "";
   state.selectedName = "instance";
   state.integrations = [];
+  state.modelProviders = [];
   state.removedIntegrations = [];
+  state.removedModelProviders = [];
   state.integrationScope = integrationStorageKey("", "instance");
   state.integrationsDirty = false;
   state.management = "user";
@@ -1533,6 +1656,7 @@ els.reset.addEventListener("click", () => {
   els.uploadName.hidden = true;
   renderErrors({});
   renderModelOptions();
+  renderModelProviders();
   renderCredentialFields();
   renderCredentialSecretHint();
   renderIntegrations();
@@ -1649,6 +1773,29 @@ els.provider.addEventListener("change", () => {
   localStorage.setItem("openclaw-deployer.provider", state.provider);
   localStorage.setItem("openclaw-deployer.model", "");
   revalidate();
+});
+
+els.modelProviderAdd.addEventListener("click", () => {
+  try {
+    const modelProvider = buildModelProviderFromForm();
+    if (modelProviderAlreadyConfigured(modelProvider.provider)) {
+      throw new Error(`${providerLabels[modelProvider.provider] || modelProvider.provider} is already configured. Remove it before adding it again.`);
+    }
+    state.removedModelProviders = state.removedModelProviders.filter((item) => item.provider !== modelProvider.provider);
+    state.modelProviders.push(modelProvider);
+    state.integrationsDirty = true;
+    clearModelProviderCredentialForm();
+    renderModelOptions();
+    renderCredentialSecretHint();
+    renderModelProviders();
+    renderReview();
+  } catch (error) {
+    renderAlert({
+      kind: "danger",
+      title: "Model provider needs attention",
+      body: error.message,
+    });
+  }
 });
 
 els.filesystemSource.addEventListener("change", () => {

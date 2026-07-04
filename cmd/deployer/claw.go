@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -171,6 +172,8 @@ func stateFromClaw(claw map[string]any) stateResponse {
 		CreatedAt:      createdAt,
 		SecretNames:    credentialSecretNames(claw),
 		CredentialRefs: credentialRefs(claw),
+		Integrations:   integrationsFromClaw(claw),
+		ModelProviders: modelProvidersFromClaw(claw),
 	}
 }
 
@@ -276,12 +279,21 @@ func (s *server) applyClaw(ctx context.Context, identity userIdentity, req provi
 	if req.APIKey != "" || req.SecretName != "" {
 		credentials = upsertProvisionCredential(credentials, req)
 	}
+	credentials = pruneRemovedModelProviderCredentials(credentials, req.RemovedModelProviders)
+	for _, modelProvider := range req.ModelProviders {
+		if modelProvider.Provider == "" || (modelProvider.APIKey == "" && modelProvider.SecretName == "") {
+			continue
+		}
+		credentials = upsertProvisionCredential(credentials, provisionRequestForModelProvider(req, modelProvider))
+	}
 	credentials, auth, webSearch, repoAccess, err := applyIntegrationsToSpec(credentials, req)
 	if err != nil {
 		return err
 	}
-	if req.ConfigureAgent && req.AgentName != "" {
-		rawConfig = applyAgentConfig(rawConfig, req.AgentName, req.Model)
+	models := modelProviderModels(req.ModelProviders)
+	removedModels := removedModelProviderModels(rawConfig, req.RemovedModelProviders)
+	if (req.ConfigureAgent || len(models) > 0 || len(removedModels) > 0) && req.AgentName != "" {
+		rawConfig = applyAgentConfig(rawConfig, req.AgentName, req.Model, models, removedModels)
 	}
 	if next := agentFilesSpec(req); next != nil {
 		agentFiles = next
@@ -330,6 +342,79 @@ func (s *server) applyClaw(ctx context.Context, identity userIdentity, req provi
 		"spec": spec,
 	}
 	return s.apply(ctx, identity, apiPath("apis/claw.sandbox.redhat.com/v1alpha1/namespaces", req.Namespace, "claws", req.Name), body)
+}
+
+func provisionRequestForModelProvider(req provisionRequest, modelProvider modelProviderRequest) provisionRequest {
+	return provisionRequest{
+		Namespace:   req.Namespace,
+		Name:        req.Name,
+		Provider:    modelProvider.Provider,
+		APIKey:      modelProvider.APIKey,
+		SecretName:  modelProvider.SecretName,
+		SecretKey:   modelProvider.SecretKey,
+		GCPProject:  modelProvider.GCPProject,
+		GCPLocation: modelProvider.GCPLocation,
+	}
+}
+
+func modelProviderModels(modelProviders []modelProviderRequest) []string {
+	models := []string{}
+	for _, modelProvider := range modelProviders {
+		if modelProvider.Model == "" {
+			continue
+		}
+		models = appendUnique(models, modelProvider.Model)
+	}
+	return models
+}
+
+func removedModelProviderModels(raw map[string]any, removed []modelProviderRequest) []string {
+	models := modelProviderModels(removed)
+	configured := configuredModelNames(map[string]any{"spec": map[string]any{"config": map[string]any{"raw": raw}}})
+	for _, modelProvider := range removed {
+		if modelProvider.Provider == "" {
+			continue
+		}
+		prefix := modelProviderFor(modelProvider.Provider) + "/"
+		for _, model := range configured {
+			if strings.HasPrefix(model, prefix) {
+				models = appendUnique(models, model)
+			}
+		}
+	}
+	return models
+}
+
+func pruneRemovedModelProviderCredentials(credentials []any, removed []modelProviderRequest) []any {
+	if len(removed) == 0 {
+		return credentials
+	}
+	next := make([]any, 0, len(credentials))
+	for _, credential := range credentials {
+		credentialMap, ok := credential.(map[string]any)
+		if !ok {
+			continue
+		}
+		if removedModelProviderCredential(credentialMap, removed) {
+			continue
+		}
+		next = append(next, credentialMap)
+	}
+	return next
+}
+
+func removedModelProviderCredential(credential map[string]any, removed []modelProviderRequest) bool {
+	name, _ := credential["name"].(string)
+	for _, modelProvider := range removed {
+		option, ok := providers[modelProvider.Provider]
+		if !ok {
+			continue
+		}
+		if name == option.CredentialName {
+			return true
+		}
+	}
+	return false
 }
 
 // agentFilesSpec builds the spec.agentFiles object for a provision request, or
@@ -896,18 +981,33 @@ func splitCSV(value string) []string {
 	return out
 }
 
-func applyAgentConfig(raw map[string]any, agentName, model string) map[string]any {
+func applyAgentConfig(raw map[string]any, agentName, model string, additionalModels []string, removedModels []string) map[string]any {
 	config := cloneMap(raw)
 	agents := ensureMap(config, "agents")
 	defaults := ensureMap(agents, "defaults")
+	if existingModels, ok := defaults["models"].(map[string]any); ok {
+		for _, removed := range removedModels {
+			delete(existingModels, removed)
+		}
+	}
+	if primary, _, _ := nestedString(defaults, "model", "primary"); slices.Contains(removedModels, primary) {
+		delete(defaults, "model")
+	}
+	modelsToKeep := append([]string{}, additionalModels...)
 	if model != "" {
+		modelsToKeep = appendUnique(modelsToKeep, model)
 		defaults["model"] = map[string]any{"primary": model}
-		models := ensureMap(defaults, "models")
-		models[model] = map[string]any{"alias": model}
 	} else {
 		// Blank model means "use the provider default": drop any override this
 		// deployer previously set so a stale model does not linger.
 		delete(defaults, "model")
+	}
+	if len(modelsToKeep) > 0 {
+		models := ensureMap(defaults, "models")
+		for _, configuredModel := range modelsToKeep {
+			models[configuredModel] = map[string]any{"alias": configuredModel}
+		}
+	} else {
 		delete(defaults, "models")
 	}
 
@@ -1062,6 +1162,7 @@ func credentialRefs(claw map[string]any) []credentialRefResponse {
 			continue
 		}
 		credentialName, _ := credentialMap["name"].(string)
+		credentialType, _ := credentialMap["type"].(string)
 		secretRefs, _, _ := nestedSlice(credentialMap, "secretRef")
 		for _, ref := range secretRefs {
 			refMap, ok := ref.(map[string]any)
@@ -1076,12 +1177,192 @@ func credentialRefs(claw map[string]any) []credentialRefResponse {
 			refs = append(refs, credentialRefResponse{
 				Credential: credentialName,
 				Provider:   provider,
+				Type:       credentialType,
 				Name:       name,
 				Key:        key,
 			})
 		}
 	}
 	return refs
+}
+
+func modelProvidersFromClaw(claw map[string]any) []modelProviderResponse {
+	refs := credentialRefs(claw)
+	models := configuredModelNames(claw)
+	out := []modelProviderResponse{}
+	for _, ref := range refs {
+		provider := providerFromCredentialRef(ref)
+		if provider == "" {
+			continue
+		}
+		out = append(out, modelProviderResponse{
+			Provider:   provider,
+			Model:      modelForProvider(provider, models),
+			SecretName: ref.Name,
+			SecretKey:  ref.Key,
+		})
+	}
+	return out
+}
+
+func providerFromCredentialRef(ref credentialRefResponse) string {
+	if ref.Credential != "" {
+		if _, ok := providers[ref.Credential]; ok {
+			return ref.Credential
+		}
+	}
+	for provider, option := range providers {
+		if option.CredentialName == ref.Credential && option.CredentialProvider == ref.Provider && option.CredentialType == ref.Type {
+			return provider
+		}
+	}
+	return ""
+}
+
+func configuredModelNames(claw map[string]any) []string {
+	models := []string{}
+	primary, _, _ := nestedString(claw, "spec", "config", "raw", "agents", "defaults", "model", "primary")
+	models = appendUnique(models, primary)
+	defaultModels, _, _ := nestedMap(claw, "spec", "config", "raw", "agents", "defaults", "models")
+	for model := range defaultModels {
+		models = appendUnique(models, model)
+	}
+	return models
+}
+
+func modelForProvider(provider string, models []string) string {
+	prefix := modelProviderFor(provider) + "/"
+	for _, model := range models {
+		if strings.HasPrefix(model, prefix) {
+			return model
+		}
+	}
+	if provider == "openrouter" {
+		for _, model := range models {
+			if strings.HasPrefix(model, "openrouter/") {
+				return model
+			}
+		}
+	}
+	return ""
+}
+
+func integrationsFromClaw(claw map[string]any) []integrationResponse {
+	name, _, _ := nestedString(claw, "metadata", "name")
+	credentials, _, _ := nestedSlice(claw, "spec", "credentials")
+	integrations := []integrationResponse{}
+	for _, item := range credentials {
+		credential, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if integration, ok := integrationFromCredential(name, credential); ok {
+			integrations = append(integrations, integration)
+		}
+	}
+	if integration, ok := integrationFromWebSearch(claw); ok {
+		integrations = append(integrations, integration)
+	}
+	if integration, ok := integrationFromAuth(claw); ok {
+		integrations = append(integrations, integration)
+	}
+	if integration, ok := integrationFromRepoAccess(claw); ok {
+		integrations = append(integrations, integration)
+	}
+	return integrations
+}
+
+func integrationFromCredential(instanceName string, credential map[string]any) (integrationResponse, bool) {
+	channel, _ := credential["channel"].(string)
+	if channel != "" {
+		integration := integrationResponse{Kind: "channel-" + channel}
+		name, _ := credential["name"].(string)
+		if name != "" && name != defaultIntegrationName(integration.Kind) {
+			integration.Name = name
+		}
+		readIntegrationSecretRefs(&integration, credential)
+		if config, ok := credential["channelConfig"].(map[string]any); ok {
+			if raw, err := json.Marshal(config); err == nil {
+				integration.ChannelConfig = string(raw)
+			}
+		}
+		return integration, true
+	}
+	provider, _ := credential["provider"].(string)
+	credentialName, _ := credential["name"].(string)
+	if providerFromCredentialRef(credentialRefResponse{Credential: credentialName, Provider: provider}) != "" {
+		return integrationResponse{}, false
+	}
+	if credentialName == "" || isDefaultDeployerGitHubCredential(instanceName, credential) {
+		return integrationResponse{}, false
+	}
+	integration := integrationResponse{Kind: "custom-credential", Name: credentialName}
+	integration.CredentialType, _ = credential["type"].(string)
+	integration.Provider = provider
+	integration.Domain, _ = credential["domain"].(string)
+	readIntegrationSecretRefs(&integration, credential)
+	if apiKey, ok := credential["apiKey"].(map[string]any); ok {
+		integration.Header, _ = apiKey["header"].(string)
+		integration.ValuePrefix, _ = apiKey["valuePrefix"].(string)
+	}
+	integration.PathPrefix, _, _ = nestedString(credential, "pathToken", "prefix")
+	integration.GCPProject, _, _ = nestedString(credential, "gcp", "project")
+	integration.GCPLocation, _, _ = nestedString(credential, "gcp", "location")
+	return integration, true
+}
+
+func readIntegrationSecretRefs(integration *integrationResponse, credential map[string]any) {
+	refs, _, _ := nestedSlice(credential, "secretRef")
+	for _, item := range refs {
+		ref, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := ref["role"].(string)
+		name, _ := ref["name"].(string)
+		key, _ := ref["key"].(string)
+		if role == "appToken" {
+			integration.AppSecretName = name
+			integration.AppSecretKey = key
+			continue
+		}
+		integration.SecretName = name
+		integration.SecretKey = key
+	}
+}
+
+func integrationFromWebSearch(claw map[string]any) (integrationResponse, bool) {
+	provider, _, _ := nestedString(claw, "spec", "webSearch", "provider")
+	if provider == "" {
+		return integrationResponse{}, false
+	}
+	integration := integrationResponse{Kind: "websearch-" + provider}
+	integration.SecretName, _, _ = nestedString(claw, "spec", "webSearch", "secretRef", "name")
+	integration.SecretKey, _, _ = nestedString(claw, "spec", "webSearch", "secretRef", "key")
+	return integration, true
+}
+
+func integrationFromAuth(claw map[string]any) (integrationResponse, bool) {
+	mode, _, _ := nestedString(claw, "spec", "auth", "mode")
+	if mode != "password" {
+		return integrationResponse{}, false
+	}
+	integration := integrationResponse{Kind: "auth-password"}
+	integration.SecretName, _, _ = nestedString(claw, "spec", "auth", "passwordSecretRef", "name")
+	integration.SecretKey, _, _ = nestedString(claw, "spec", "auth", "passwordSecretRef", "key")
+	return integration, true
+}
+
+func integrationFromRepoAccess(claw map[string]any) (integrationResponse, bool) {
+	secretName, _, _ := nestedString(claw, "spec", "repoAccess", "github", "secretRef", "name")
+	if secretName == "" {
+		return integrationResponse{}, false
+	}
+	integration := integrationResponse{Kind: "github-pat", SecretName: secretName}
+	integration.SecretKey, _, _ = nestedString(claw, "spec", "repoAccess", "github", "secretRef", "key")
+	exposeEnv, _, _ := nestedBool(claw, "spec", "repoAccess", "github", "exposeEnv")
+	integration.ExposeEnv = exposeEnv
+	return integration, true
 }
 
 func credentialSecretNames(claw map[string]any) []string {

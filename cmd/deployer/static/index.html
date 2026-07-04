@@ -38,7 +38,7 @@
 
       <div class="page-header">
         <h1>OpenClaw Deployer</h1>
-        <p>Deploy your own OpenClaw AI assistant in a few clicks — no Kubernetes experience needed. Name it, choose an AI provider, paste your key, and create.</p>
+        <p>Deploy your own OpenClaw AI assistant in a few clicks. Name it, choose an AI provider, paste your key, and create.</p>
       </div>
 
       <div class="layout">
@@ -98,6 +98,12 @@
                 <input id="model" name="model" list="model-options" placeholder="Leave blank for the recommended default" aria-describedby="hint-model">
                 <datalist id="model-options"></datalist>
                 <p class="field__hint" id="hint-model">Default: <code id="default-model">—</code></p>
+              </div>
+              <div class="field">
+                <label>Configured model providers</label>
+                <button type="button" id="model-provider-add" class="btn btn--sm">Add provider</button>
+                <div class="integration-list" id="model-provider-list"></div>
+                <p class="field__hint">Add more than one provider/model. Each entry uses the provider, model, and Secret/API key fields currently shown in this form.</p>
               </div>
             </div>
 
@@ -348,7 +354,7 @@
                   <option value="user">User-managed — OpenClaw owns runtime config</option>
                   <option value="operator">Operator-managed — CR fields keep applying</option>
                 </select>
-                <p class="field__hint" id="management-hint">User-managed is the default. The operator seeds initial provider/model config, then UI, CLI, plugin, skill, MCP, and agent config edits persist on the PVC. Operator-managed keeps reconciling runtime config from this form and the Claw CR.</p>
+                <p class="field__hint" id="management-hint">User-managed is the default. Proxy-backed providers and add-ons stay managed through this form and the Claw CR; ordinary OpenClaw runtime config edits from the UI, CLI, plugins, skills, MCPs, and agents persist on the PVC. Operator-managed keeps reconciling runtime config from this form and the Claw CR.</p>
               </div>
               <div class="field" id="openclaw-image-field" hidden>
                 <label for="openClawImage">OpenClaw image override <span class="muted">(optional)</span></label>

@@ -79,8 +79,20 @@ type provisionRequest struct {
 	ConfigMapName    string `json:"configMapName"`
 	ConfigMapKey     string `json:"configMapKey"`
 
-	Integrations        []integrationRequest `json:"integrations"`
-	RemovedIntegrations []integrationRequest `json:"removedIntegrations"`
+	Integrations          []integrationRequest   `json:"integrations"`
+	RemovedIntegrations   []integrationRequest   `json:"removedIntegrations"`
+	ModelProviders        []modelProviderRequest `json:"modelProviders"`
+	RemovedModelProviders []modelProviderRequest `json:"removedModelProviders"`
+}
+
+type modelProviderRequest struct {
+	Provider    string `json:"provider"`
+	Model       string `json:"model"`
+	APIKey      string `json:"apiKey"`
+	SecretName  string `json:"secretName"`
+	SecretKey   string `json:"secretKey"`
+	GCPProject  string `json:"gcpProject"`
+	GCPLocation string `json:"gcpLocation"`
 }
 
 type integrationRequest struct {
@@ -136,13 +148,49 @@ type stateResponse struct {
 	CreatedAt      string                  `json:"createdAt,omitempty"`
 	SecretNames    []string                `json:"secretNames,omitempty"`
 	CredentialRefs []credentialRefResponse `json:"credentialRefs,omitempty"`
+	Integrations   []integrationResponse   `json:"integrations,omitempty"`
+	ModelProviders []modelProviderResponse `json:"modelProviders,omitempty"`
 }
 
 type credentialRefResponse struct {
 	Credential string `json:"credential,omitempty"`
 	Provider   string `json:"provider,omitempty"`
+	Type       string `json:"type,omitempty"`
 	Name       string `json:"name,omitempty"`
 	Key        string `json:"key,omitempty"`
+}
+
+type integrationResponse struct {
+	Kind string `json:"kind"`
+	Name string `json:"name,omitempty"`
+
+	SecretName string `json:"secretName,omitempty"`
+	SecretKey  string `json:"secretKey,omitempty"`
+
+	AppSecretName string `json:"appSecretName,omitempty"`
+	AppSecretKey  string `json:"appSecretKey,omitempty"`
+
+	CredentialType string `json:"credentialType,omitempty"`
+	Provider       string `json:"provider,omitempty"`
+	Channel        string `json:"channel,omitempty"`
+	Domain         string `json:"domain,omitempty"`
+	Header         string `json:"header,omitempty"`
+	ValuePrefix    string `json:"valuePrefix,omitempty"`
+	PathPrefix     string `json:"pathPrefix,omitempty"`
+	GCPProject     string `json:"gcpProject,omitempty"`
+	GCPLocation    string `json:"gcpLocation,omitempty"`
+	OAuthClientID  string `json:"oauthClientID,omitempty"`
+	OAuthTokenURL  string `json:"oauthTokenURL,omitempty"`
+	OAuthScopes    string `json:"oauthScopes,omitempty"`
+	ChannelConfig  string `json:"channelConfig,omitempty"`
+	ExposeEnv      bool   `json:"exposeEnv,omitempty"`
+}
+
+type modelProviderResponse struct {
+	Provider   string `json:"provider"`
+	Model      string `json:"model,omitempty"`
+	SecretName string `json:"secretName,omitempty"`
+	SecretKey  string `json:"secretKey,omitempty"`
 }
 
 type listResponse struct {
