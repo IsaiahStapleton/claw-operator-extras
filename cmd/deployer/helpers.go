@@ -244,6 +244,74 @@ func normalizeIntegrations(integrations []integrationRequest) {
 	}
 }
 
+func normalizeModelProviders(modelProviders []modelProviderRequest) {
+	for i := range modelProviders {
+		modelProviders[i].Provider = strings.ToLower(strings.TrimSpace(modelProviders[i].Provider))
+		modelProviders[i].Model = strings.TrimSpace(modelProviders[i].Model)
+		if modelProviders[i].Model != "" {
+			modelProviders[i].Model = normalizeModelRef(modelProviders[i].Provider, modelProviders[i].Model)
+		}
+		modelProviders[i].APIKey = strings.TrimSpace(modelProviders[i].APIKey)
+		modelProviders[i].SecretName = strings.TrimSpace(modelProviders[i].SecretName)
+		modelProviders[i].SecretKey = strings.TrimSpace(modelProviders[i].SecretKey)
+		modelProviders[i].GCPProject = strings.TrimSpace(modelProviders[i].GCPProject)
+		modelProviders[i].GCPLocation = strings.TrimSpace(modelProviders[i].GCPLocation)
+	}
+}
+
+func validateModelProviders(modelProviders []modelProviderRequest) error {
+	for _, modelProvider := range modelProviders {
+		if modelProvider.Provider == "" {
+			continue
+		}
+		option, ok := providers[modelProvider.Provider]
+		if !ok {
+			return fmt.Errorf("unsupported provider %q", modelProvider.Provider)
+		}
+		if modelProvider.SecretName != "" {
+			if err := validateResourceName(modelProvider.SecretName, "Secret name"); err != nil {
+				return err
+			}
+		}
+		hasCredentialInput := modelProvider.APIKey != "" || modelProvider.SecretName != ""
+		if option.RequiresGCP && hasCredentialInput && (modelProvider.GCPProject == "" || modelProvider.GCPLocation == "") {
+			return fmt.Errorf("GCP project and location are required for provider %q", modelProvider.Provider)
+		}
+		if option.RequiresGCP && modelProvider.APIKey != "" {
+			if err := validateGCPServiceAccountJSON(modelProvider.APIKey); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateRemovedModelProviders(modelProviders []modelProviderRequest) error {
+	for _, modelProvider := range modelProviders {
+		if modelProvider.Provider == "" {
+			continue
+		}
+		if _, ok := providers[modelProvider.Provider]; !ok {
+			return fmt.Errorf("unsupported provider %q", modelProvider.Provider)
+		}
+		if modelProvider.SecretName != "" {
+			if err := validateResourceName(modelProvider.SecretName, "Secret name"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func hasModelProviderCredentialInput(modelProviders []modelProviderRequest) bool {
+	for _, modelProvider := range modelProviders {
+		if modelProvider.APIKey != "" || modelProvider.SecretName != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func validateProvisionIntegrations(req provisionRequest) error {
 	if req.GitSecretName != "" {
 		if err := validateResourceName(req.GitSecretName, "Git Secret name"); err != nil {
@@ -420,6 +488,15 @@ func nestedString(obj map[string]any, fields ...string) (string, bool, error) {
 	}
 	s, ok := v.(string)
 	return s, ok, nil
+}
+
+func nestedBool(obj map[string]any, fields ...string) (bool, bool, error) {
+	v, ok, err := nestedValue(obj, fields...)
+	if err != nil || !ok {
+		return false, ok, err
+	}
+	b, ok := v.(bool)
+	return b, ok, nil
 }
 
 func nestedSlice(obj map[string]any, fields ...string) ([]any, bool, error) {

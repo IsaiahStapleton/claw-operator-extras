@@ -107,9 +107,11 @@ Claws the user can see.
 The deployer binary defaults new Claws to `spec.config.management=user` when a
 provision request omits management; `CLAW_CONFIG_MANAGEMENT_DEFAULT` overrides
 that fallback. The UI exposes a Config ownership option and defaults it to
-user-managed, so OpenClaw owns runtime config after the operator seeds the
-initial CR settings. Operator-managed remains available for Claws that should
-keep reconciling runtime config from the form and the Claw CR.
+user-managed. Proxy-backed providers and add-ons stay managed through this UI
+and the Claw CR, while ordinary OpenClaw runtime config edits made through the
+UI, CLI, plugins, skills, MCPs, or agents persist on the PVC. Operator-managed
+remains available for Claws that should keep reconciling runtime config from the
+form and the Claw CR.
 
 Set `DISABLE_USER_CONFIG_MANAGEMENT=true` on the deployer when the operator has
 user-managed config disabled. The deployer hides user-managed-only controls,

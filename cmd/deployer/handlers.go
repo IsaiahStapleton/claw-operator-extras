@@ -199,8 +199,9 @@ func (s *server) handleProvision(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	hasCredentialInput := req.APIKey != "" || req.SecretName != ""
-	if provider.RequiresGCP && hasCredentialInput && (req.GCPProject == "" || req.GCPLocation == "") {
+	hasSingleCredentialInput := req.APIKey != "" || req.SecretName != ""
+	hasCredentialInput := hasSingleCredentialInput || hasModelProviderCredentialInput(req.ModelProviders)
+	if provider.RequiresGCP && hasSingleCredentialInput && (req.GCPProject == "" || req.GCPLocation == "") {
 		writeError(w, http.StatusBadRequest, "GCP project and location are required")
 		return
 	}
@@ -219,8 +220,18 @@ func (s *server) handleProvision(w http.ResponseWriter, r *http.Request) {
 	req.GitPassword = strings.TrimSpace(req.GitPassword)
 	req.ConfigMapName = strings.TrimSpace(req.ConfigMapName)
 	req.ConfigMapKey = strings.TrimSpace(req.ConfigMapKey)
+	normalizeModelProviders(req.ModelProviders)
+	normalizeModelProviders(req.RemovedModelProviders)
 	normalizeIntegrations(req.Integrations)
 	normalizeIntegrations(req.RemovedIntegrations)
+	if err := validateModelProviders(req.ModelProviders); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateRemovedModelProviders(req.RemovedModelProviders); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := validateFilesystemSource(&req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -250,6 +261,16 @@ func (s *server) handleProvision(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.APIKey != "" {
 		if err := s.applySecret(r.Context(), identity, req); err != nil {
+			writeError(w, statusCodeFor(err), "failed to create provider secret: "+err.Error())
+			return
+		}
+	}
+	for _, providerReq := range req.ModelProviders {
+		if providerReq.APIKey == "" {
+			continue
+		}
+		secretReq := provisionRequestForModelProvider(req, providerReq)
+		if err := s.applySecret(r.Context(), identity, secretReq); err != nil {
 			writeError(w, statusCodeFor(err), "failed to create provider secret: "+err.Error())
 			return
 		}
