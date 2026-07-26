@@ -113,3 +113,60 @@ func TestGraphSeparatesSynthesizedLayerFromSources(t *testing.T) {
 		t.Fatalf("counts = %v", g.Counts)
 	}
 }
+
+// Obsidian builds its graph from body links, and so must this. Reading only
+// frontmatter left almost every page disconnected, which is not what the same
+// vault looks like in Obsidian.
+func TestExtractLinksResolvesBodyLinks(t *testing.T) {
+	body := []byte(`# Sources
+
+- [Memory Bridge](bridge-stitch-abc.md)
+- [Up one level](../index.md)
+- [[stitch-operating-model]]
+- [external](https://example.com/page.md)
+- [anchored](claim-health.md#section)
+`)
+	links := extractLinks("workspace/wiki/main/sources/index.md", body)
+
+	want := map[string]bool{
+		"workspace/wiki/main/sources/bridge-stitch-abc.md":      true,
+		"workspace/wiki/main/index.md":                          true,
+		"workspace/wiki/main/sources/stitch-operating-model.md": true,
+		"workspace/wiki/main/sources/claim-health.md":           true,
+	}
+	if len(links) != len(want) {
+		t.Fatalf("links = %v, want %d entries", links, len(want))
+	}
+	for _, l := range links {
+		if !want[l] {
+			t.Fatalf("unexpected link %q (an external URL must not become a node)", l)
+		}
+	}
+}
+
+func TestBodyLinksConnectPagesIncludingIndexes(t *testing.T) {
+	pages := []WikiPage{
+		// An index page has no frontmatter at all, yet holds the wiki's
+		// link structure; excluding it disconnected the graph.
+		{Path: "wiki/main/index.md", Title: "index",
+			Links: []string{"wiki/main/concepts/a.md"}},
+		{Path: "wiki/main/concepts/a.md", ID: "concept.a", PageType: "concept", Title: "A",
+			Links: []string{"wiki/main/index.md"}},
+	}
+	g := buildWikiGraph(pages)
+
+	if len(g.Pages) != 2 {
+		t.Fatalf("pages = %d, want the concept and the index", len(g.Pages))
+	}
+	if len(g.Edges) != 2 {
+		t.Fatalf("edges = %+v, want a link each way", g.Edges)
+	}
+	for _, e := range g.Edges {
+		if e.Kind != "link" {
+			t.Fatalf("edge kind = %q, want link", e.Kind)
+		}
+	}
+	if g.Counts["index"] != 1 {
+		t.Fatalf("counts = %v, want the untyped page counted as an index", g.Counts)
+	}
+}

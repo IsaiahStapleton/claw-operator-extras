@@ -1102,6 +1102,7 @@ const WIKI_TYPES = {
   entity:    { color: '#009596', label: 'Entity' },
   synthesis: { color: '#5e40be', label: 'Synthesis' },
   report:    { color: '#795600', label: 'Report' },
+  index:     { color: '#b8bbbe', label: 'Index' },
   source:    { color: '#8a8d90', label: 'Source' },
 };
 const wikiType = (t) => WIKI_TYPES[t] || { color: '#8a8d90', label: t || 'Page' };
@@ -1145,7 +1146,8 @@ function buildSim(w) {
       id: p.id, path: p.path, type: p.pageType || 'page',
       label: p.title || p.id,
       short: (p.title || p.id).length > 26 ? (p.title || p.id).slice(0, 25) + '…' : (p.title || p.id),
-      r: p.pageType === 'source' ? 4.5 : (p.pageType === 'concept' || p.pageType === 'entity') ? 9 : 7,
+      r: p.pageType === 'source' ? 4.5 : p.pageType === 'index' ? 6
+        : (p.pageType === 'concept' || p.pageType === 'entity') ? 9 : 7,
       x: old ? old.x : cx + R * Math.cos(a), y: old ? old.y : cy + R * Math.sin(a),
       vx: 0, vy: 0, fx: null, fy: null,
     };

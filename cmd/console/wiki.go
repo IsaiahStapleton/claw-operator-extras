@@ -16,20 +16,69 @@ limitations under the License.
 
 // The memory wiki as a knowledge graph.
 //
-// OpenClaw's wiki pages carry structured YAML frontmatter — a stable id, a
-// page type, typed relationships with weight and confidence, provenance
-// sourceIds, and claims with a support status. The graph is therefore
-// declared, not inferred from link text, which makes it both cheaper and more
-// truthful than scraping [[wikilinks]].
+// Edges come from two places. OpenClaw's pages declare structure in YAML
+// frontmatter — typed relationships with weight and confidence, and provenance
+// sourceIds — which is richer than a link, but there are very few of them. The
+// bulk of the structure is ordinary markdown links in the page bodies, which is
+// what Obsidian draws its graph from. Reading only the frontmatter produced a
+// field of disconnected dots that did not match the same vault in Obsidian, so
+// the graph reads both.
 
 package main
 
 import (
+	"path"
+	"regexp"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+// Links in the body are what Obsidian draws its graph from, and they vastly
+// outnumber the frontmatter relationships — 395 markdown links against 2
+// declared relations in a real wiki. Building the graph from frontmatter alone
+// produced a field of disconnected dots that did not match what the same vault
+// looks like in Obsidian.
+var (
+	mdLinkRE   = regexp.MustCompile(`\]\(([^)\s]+\.md)(?:#[^)]*)?\)`)
+	wikiLinkRE = regexp.MustCompile(`\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]`)
+)
+
+// extractLinks resolves every outgoing link in a page body to a wiki-relative
+// path, so an edge can be drawn to whichever page sits there.
+func extractLinks(pagePath string, body []byte) []string {
+	dir := path.Dir(pagePath)
+	seen := map[string]bool{}
+	var out []string
+	add := func(target string) {
+		target = strings.TrimSpace(target)
+		if target == "" || strings.Contains(target, "://") {
+			return
+		}
+		if !strings.HasSuffix(target, ".md") {
+			target += ".md"
+		}
+		resolved := target
+		if !strings.HasPrefix(target, "/") {
+			resolved = path.Join(dir, target)
+		}
+		resolved = strings.TrimPrefix(path.Clean(resolved), "/")
+		if resolved == pagePath || seen[resolved] {
+			return
+		}
+		seen[resolved] = true
+		out = append(out, resolved)
+	}
+	text := string(body)
+	for _, m := range mdLinkRE.FindAllStringSubmatch(text, -1) {
+		add(m[1])
+	}
+	for _, m := range wikiLinkRE.FindAllStringSubmatch(text, -1) {
+		add(m[1])
+	}
+	return out
+}
 
 // Page types that make up the synthesized layer — what the wiki has actually
 // concluded, as opposed to the raw memory it imported.
@@ -80,6 +129,9 @@ type WikiPage struct {
 	SourceIDs       []string    `json:"sourceIds,omitempty"`
 	Relationships   []WikiRel   `json:"relationships,omitempty"`
 	Claims          []WikiClaim `json:"claims,omitempty"`
+	// Links are outgoing body links resolved to wiki-relative paths. These
+	// carry the bulk of the graph's structure.
+	Links []string `json:"links,omitempty"`
 	// ModifiedAt is the file's mtime, which is the only timing available for a
 	// page whose frontmatter omits lastRefreshedAt.
 	ModifiedAt string `json:"modifiedAt"`
@@ -127,6 +179,7 @@ func parseWikiPage(path string, body []byte, size, modTime int64) WikiPage {
 	if page.Title == "" {
 		page.Title = titleFromPath(path)
 	}
+	page.Links = extractLinks(path, body)
 	return page
 }
 
@@ -180,6 +233,13 @@ func buildWikiGraph(pages []WikiPage) WikiGraph {
 			graph.Pages = append(graph.Pages, p)
 		case p.PageType == "source" && p.ID != "":
 			graph.Sources[p.ID] = p
+		case p.PageType == "":
+			// Generated index pages have no frontmatter but hold most of the
+			// wiki's link structure; excluding them is what made the graph
+			// look disconnected.
+			p.PageType = "index"
+			graph.Counts["index"]++
+			graph.Pages = append(graph.Pages, p)
 		}
 	}
 
@@ -187,23 +247,57 @@ func buildWikiGraph(pages []WikiPage) WikiGraph {
 	for _, p := range graph.Pages {
 		known[p.ID] = true
 	}
-	for _, p := range graph.Pages {
-		for _, rel := range p.Relationships {
-			// Declared relationships between synthesized pages are the graph
-			// proper; a target that is a source is provenance, handled below.
-			if !known[rel.TargetID] {
-				continue
-			}
-			graph.Edges = append(graph.Edges, WikiEdge{
-				From: p.ID, To: rel.TargetID, Kind: rel.Kind,
-				Weight: rel.Weight, Confidence: rel.Confidence,
-			})
+	// Body links resolve by path, so index the whole wiki that way too — an
+	// index page has no frontmatter id but is still a legitimate link target.
+	byPath := map[string]WikiPage{}
+	for _, p := range pages {
+		byPath[p.Path] = p
+	}
+	// A node's key is its id when it has one and its path otherwise, so every
+	// page can take part in the graph.
+	nodeKey := func(p WikiPage) string {
+		if p.ID != "" {
+			return p.ID
 		}
-		for _, sid := range p.SourceIDs {
-			if _, ok := graph.Sources[sid]; !ok {
+		return p.Path
+	}
+
+	seen := map[string]bool{}
+	addEdge := func(from, to, kind string, weight, confidence float64) {
+		if from == "" || to == "" || from == to {
+			return
+		}
+		k := from + "\x00" + to + "\x00" + kind
+		if seen[k] {
+			return
+		}
+		seen[k] = true
+		graph.Edges = append(graph.Edges, WikiEdge{
+			From: from, To: to, Kind: kind, Weight: weight, Confidence: confidence,
+		})
+	}
+
+	for _, p := range pages {
+		from := nodeKey(p)
+		if synthesizedTypes[p.PageType] {
+			for _, rel := range p.Relationships {
+				if known[rel.TargetID] {
+					addEdge(from, rel.TargetID, rel.Kind, rel.Weight, rel.Confidence)
+				}
+			}
+			for _, sid := range p.SourceIDs {
+				if _, ok := graph.Sources[sid]; ok {
+					addEdge(from, sid, "source", 0, 0)
+				}
+			}
+		}
+		// Body links, which is what an Obsidian graph of this vault shows.
+		for _, target := range p.Links {
+			tp, ok := byPath[target]
+			if !ok {
 				continue
 			}
-			graph.Edges = append(graph.Edges, WikiEdge{From: p.ID, To: sid, Kind: "source"})
+			addEdge(from, nodeKey(tp), "link", 0, 0)
 		}
 	}
 	return graph
