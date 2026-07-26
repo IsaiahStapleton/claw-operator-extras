@@ -144,24 +144,9 @@ func (s *server) buildAgentViews(snap *Snapshot, now time.Time) []AgentView {
 	return views
 }
 
-// lastEventOfRun resolves the last event of the currently-running run. It reads
-// the events already in the snapshot rather than fetching the session again:
-// the offset-safe lookup matters because `latest.Steps` counts one run while
-// the session file holds them all, and re-reading would cost a round trip into
-// the pod on every refresh.
-func lastEventOfRun(snap *Snapshot, agent string, latest *Run) string {
-	for _, sess := range snap.Sessions {
-		if sess.Agent != agent || sess.SessionID != latest.SessionID {
-			continue
-		}
-		events := make([]Event, len(sess.Events))
-		copy(events, sess.Events)
-		sortEvents(events)
-		for i := len(events) - 1; i >= 0; i-- {
-			if events[i].RunID == latest.RunID {
-				return eventSummary(events[i])
-			}
-		}
-	}
-	return ""
+// lastEventOfRun reports what a running run is doing. The summary is captured
+// when the run is derived, so neither the full event list nor another read of
+// the session is needed here.
+func lastEventOfRun(_ *Snapshot, _ string, latest *Run) string {
+	return latest.CurrentStep
 }

@@ -77,7 +77,8 @@ const (
 type parsedSession struct {
 	size      int64
 	modTime   int64
-	events    []Event
+	events    []Event // filtered: only what the cross-session analyses need
+	runs      []Run   // derived while the full events were still in hand
 	badLines  int
 	truncated int
 }
@@ -254,7 +255,8 @@ func (s *Store) scan() *Snapshot {
 					}
 				}
 				cached = parsedSession{size: f.Size, modTime: f.ModTime,
-					events: events, badLines: bad, truncated: truncated}
+					events: retainForAnalysis(events), badLines: bad, truncated: truncated,
+					runs: deriveRuns(agent, sessionID, events, now)}
 				s.parsed[key] = cached
 			}
 
@@ -263,7 +265,7 @@ func (s *Store) scan() *Snapshot {
 			snap.TruncatedEvents += cached.truncated
 			snap.Sessions = append(snap.Sessions, Session{Agent: agent, SessionID: sessionID, Events: cached.events})
 
-			runs := deriveRuns(agent, sessionID, cached.events, now)
+			runs := append([]Run(nil), cached.runs...)
 			// A prompt the runtime dropped for size often survives in the
 			// plain transcript, which is written separately and is not
 			// subject to the trajectory event limit.

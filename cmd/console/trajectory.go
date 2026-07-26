@@ -70,6 +70,9 @@ type Run struct {
 	// show provenance rather than implying it came from the trajectory.
 	PromptTruncated bool   `json:"promptTruncated,omitempty"`
 	PromptSource    string `json:"promptSource,omitempty"`
+	// CurrentStep summarizes the run's last event, captured during derivation
+	// so the analysis does not need the full event list retained afterwards.
+	CurrentStep string `json:"currentStep,omitempty"`
 	// promptAt is when the prompt was actually submitted, which can trail the
 	// run's first event by minutes while context is compiled. Recovery matches
 	// on this, not StartedAt. Internal to the scan; not part of the API.
@@ -295,6 +298,7 @@ func deriveRuns(agent, sessionID string, events []Event, now time.Time) []Run {
 			Steps: len(evs), Tokens: tokens, Prompt: prompt,
 			Model: first.ModelID, Provider: first.Provider,
 			PromptTruncated: promptTruncated, promptAt: promptAt,
+			CurrentStep: eventSummary(last),
 		})
 	}
 	sort.SliceStable(runs, func(i, j int) bool {
@@ -404,3 +408,63 @@ func toolArgs(d map[string]any) map[string]any {
 	}
 	return map[string]any{}
 }
+
+// retainForAnalysis keeps only what the cross-session analyses still need
+// after runs are derived: session starts (handoff correlation), prompts
+// (declared parents), and tool calls (spawn targets and memory writes).
+// Everything else — tool results and model completions, which carry the bulk
+// of the payload — is dropped. Retaining every event of every session is what
+// put this console over its memory limit against a real Claw.
+func retainForAnalysis(events []Event) []Event {
+	out := make([]Event, 0, len(events)/4)
+	for _, e := range events {
+		switch e.Type {
+		case "session.started", "prompt.submitted", "tool.call":
+			out = append(out, Event{
+				Type: e.Type, TS: e.TS, Seq: e.Seq, RunID: e.RunID,
+				ModelID: e.ModelID, Provider: e.Provider,
+				Data: trimAnalysisData(e),
+			})
+		}
+	}
+	return out
+}
+
+// trimAnalysisData keeps the fields the analyses read and clips the large
+// free-text ones. A prompt can be hundreds of kilobytes, but the declared
+// parent marker sits at its head, and a memory write's content is shown only
+// as a preview.
+func trimAnalysisData(e Event) map[string]any {
+	if e.Data == nil {
+		return nil
+	}
+	switch e.Type {
+	case "prompt.submitted":
+		d := map[string]any{}
+		if p, ok := e.Data["prompt"].(string); ok {
+			d["prompt"] = clipBytes(p, analysisTextLimit)
+		}
+		if t, ok := e.Data["truncated"].(bool); ok {
+			d["truncated"] = t
+		}
+		return d
+	case "tool.call":
+		d := map[string]any{"name": e.Data["name"]}
+		if a := toolArgs(e.Data); len(a) > 0 {
+			trimmed := map[string]any{}
+			for k, v := range a {
+				if str, ok := v.(string); ok {
+					trimmed[k] = clipBytes(str, analysisTextLimit)
+					continue
+				}
+				trimmed[k] = v
+			}
+			d["arguments"] = trimmed
+		}
+		return d
+	}
+	return e.Data
+}
+
+// analysisTextLimit bounds any single retained string.
+const analysisTextLimit = 8000
