@@ -52,7 +52,7 @@ func fixtureRoot(t *testing.T) string {
 				"name": "spawn_agent", "arguments": map[string]any{"agent": "security"}}}),
 			ev("tool.call", evOpts{TS: iso(now.Add(-17 * time.Minute)), Data: map[string]any{
 				"name":      "write",
-				"arguments": map[string]any{"path": "memory-map/tasks/gateway.md", "content": "OOMKilled"}}}),
+				"arguments": map[string]any{"path": "workspace/memory/gateway.md", "content": "OOMKilled"}}}),
 			ev("model.completed", evOpts{TS: iso(now.Add(-16 * time.Minute)),
 				Data: map[string]any{"usage": map[string]any{"input": float64(100), "output": float64(50)}}}),
 		}},
@@ -283,7 +283,7 @@ func TestHandleMemoryAndHandoffs(t *testing.T) {
 	if len(writes) != 1 {
 		t.Fatalf("memory writes = %d, want 1", len(writes))
 	}
-	if p := writes[0].(map[string]any)["notePath"]; p != "memory-map/tasks/gateway.md" {
+	if p := writes[0].(map[string]any)["notePath"]; p != "memory/gateway.md" {
 		t.Fatalf("notePath = %v", p)
 	}
 

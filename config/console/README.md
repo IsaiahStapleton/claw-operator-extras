@@ -83,7 +83,23 @@ silently dropped.
 | `GATEWAY_URL` | unset | Claw gateway to health-check. Unset reports "disabled" rather than guessing. |
 | `EXCLUDED_AGENTS` | unset | Comma-separated agent directories to hide |
 | `AGENT_META` | unset | JSON map of `{agent: {emoji, title, desc}}` for display |
+| `MEMORY_PATH_PATTERN` | `(?:^\|/)(?:memory\|wiki)/[\w\-./]*\.md` | Regexp matching vault note paths. The default covers all three of OpenClaw's stores; override it for a vault kept elsewhere. |
 | `CONSOLE_CACHE_MS` | `2000` | Minimum interval between re-indexes |
+
+## What counts as a memory write
+
+OpenClaw keeps durable notes in three places, and the console watches all of
+them:
+
+- `workspace/memory/*.md` — the shared daily and named notes
+- `workspace/wiki/main/**` — the memory wiki (concepts, entities, syntheses)
+- `<agent>/memory/dreaming/{deep,light}/*.md` — per-agent consolidation
+
+A write is a `tool.call` that touches one of those paths, or a call to a native
+mutating memory tool (`memory_store`, `memory_forget`) which changes the store
+without naming a file. Reads — `memory_search`, `memory_get`, `wiki_get`, a
+`cat` — are deliberately excluded, as are edits made by a human rather than an
+agent, which leave no tool call to observe.
 
 ## A note on agent backends
 

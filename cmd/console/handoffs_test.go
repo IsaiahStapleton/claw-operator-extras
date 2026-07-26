@@ -211,16 +211,16 @@ func TestExtractMemoryWritesDetectsToolWritesAndSkipsReads(t *testing.T) {
 	sessions := []Session{sessionOf("librarian", "sess-1",
 		ev("tool.call", evOpts{TS: iso(now), Data: map[string]any{
 			"name":      "write",
-			"arguments": map[string]any{"path": "memory-map/tasks/audit.md", "content": "# audit\nall clear"}}}),
+			"arguments": map[string]any{"path": "workspace/memory/2026-07-26.md", "content": "# notes\nall clear"}}}),
 		ev("tool.call", evOpts{TS: iso(now.Add(time.Second)), Data: map[string]any{
 			"name":      "read",
-			"arguments": map[string]any{"path": "memory-map/tasks/audit.md"}}}),
+			"arguments": map[string]any{"path": "workspace/memory/2026-07-26.md"}}}),
 		ev("tool.call", evOpts{TS: iso(now.Add(2 * time.Second)), Data: map[string]any{
 			"name":      "bash",
-			"arguments": map[string]any{"command": "cat memory-map/tasks/audit.md"}}}),
+			"arguments": map[string]any{"command": "cat workspace/memory/2026-07-26.md"}}}),
 		ev("tool.call", evOpts{TS: iso(now.Add(3 * time.Second)), Data: map[string]any{
 			"name":      "bash",
-			"arguments": map[string]any{"command": "echo done >> memory-map/tasks/audit.md"}}}),
+			"arguments": map[string]any{"command": "echo done >> workspace/memory/2026-07-26.md"}}}),
 		ev("tool.call", evOpts{TS: iso(now.Add(4 * time.Second)), Data: map[string]any{
 			"name":      "write",
 			"arguments": map[string]any{"path": "/etc/motd", "content": "not the vault"}}}),
@@ -231,7 +231,7 @@ func TestExtractMemoryWritesDetectsToolWritesAndSkipsReads(t *testing.T) {
 		t.Fatalf("writes = %d, want 2 (the write tool and the appending bash command)", len(writes))
 	}
 	for _, w := range writes {
-		if w.NotePath != "memory-map/tasks/audit.md" {
+		if w.NotePath != "memory/2026-07-26.md" {
 			t.Fatalf("notePath = %q, want the vault path", w.NotePath)
 		}
 		if w.Agent != "librarian" {
@@ -249,10 +249,65 @@ func TestExtractMemoryWritesIgnoresNonVaultAndNonWriteTools(t *testing.T) {
 	sessions := []Session{sessionOf("main", "sess-1",
 		ev("tool.call", evOpts{TS: iso(now), Data: map[string]any{
 			"name": "grep", "arguments": map[string]any{"path": "memory-map/notes.md"}}}),
-		ev("tool.result", evOpts{TS: iso(now), Data: map[string]any{"output": "memory-map/notes.md"}}),
+		ev("tool.result", evOpts{TS: iso(now), Data: map[string]any{"output": "workspace/memory/notes.md"}}),
 	)}
 
 	if writes := extractMemoryWrites(sessions); len(writes) != 0 {
 		t.Fatalf("writes = %d, want 0 (reads and non-tool.call events are not writes)", len(writes))
+	}
+}
+
+// The wiki and per-agent "dreaming" notes are memory too — all three of
+// OpenClaw's stores live under a memory/ or wiki/ path segment.
+func TestVaultPatternCoversEveryOpenClawMemoryStore(t *testing.T) {
+	for _, path := range []string{
+		"workspace/memory/2026-07-26.md", // shared daily notes
+		"/home/node/.openclaw/workspace/memory/preferences.md",
+		"/home/node/.openclaw/workspace/wiki/main/concepts/agents.md", // memory wiki
+		"stitch/memory/dreaming/deep/2026-07-24.md",                   // per-agent consolidation
+	} {
+		if !vaultPathRE.MatchString(path) {
+			t.Errorf("vault pattern should match %q — it is one of OpenClaw's memory stores", path)
+		}
+	}
+	for _, path := range []string{"src/main.go", "workspace/AGENTS.md", "notes.txt"} {
+		if vaultPathRE.MatchString(path) {
+			t.Errorf("vault pattern should not match %q", path)
+		}
+	}
+}
+
+// A deployment that keeps its vault elsewhere can say so; the home-server
+// convention is memory-map/.
+func TestVaultPatternIsOverridable(t *testing.T) {
+	re := compileVaultPattern(`memory-map/[\w\-./]*\.md`)
+	if !re.MatchString("memory-map/tasks/audit.md") {
+		t.Fatal("override pattern should match its own convention")
+	}
+	if got := compileVaultPattern("([unclosed"); got.String() != defaultVaultPattern {
+		t.Fatal("an invalid override must fall back to the default, not panic")
+	}
+}
+
+// Native memory tools mutate the store without naming a file.
+func TestNativeMemoryToolCountsAsAWrite(t *testing.T) {
+	now := time.Now().UTC()
+	sessions := []Session{sessionOf("podling", "sess-1",
+		ev("tool.call", evOpts{TS: iso(now), Data: map[string]any{
+			"name":      "memory_store",
+			"arguments": map[string]any{"title": "deployment decision", "content": "chose exec over PVC mounts"}}}),
+		ev("tool.call", evOpts{TS: iso(now), Data: map[string]any{
+			"name": "memory_search", "arguments": map[string]any{"query": "deployment"}}}),
+	)}
+
+	writes := extractMemoryWrites(sessions)
+	if len(writes) != 1 {
+		t.Fatalf("writes = %d, want 1 — memory_store writes, memory_search only reads", len(writes))
+	}
+	if writes[0].NotePath != "deployment decision" {
+		t.Fatalf("notePath = %q, want the note title", writes[0].NotePath)
+	}
+	if writes[0].Content == "" {
+		t.Fatal("the stored content should be captured")
 	}
 }
