@@ -458,7 +458,14 @@ td.nowrap { white-space: nowrap; }
   padding: 6px 14px; font-weight: 600; font-size: 12px; cursor: pointer;
 }
 .topo-ranges button.active { background: var(--info); color: #fff; }
-.topo-canvas { position: relative; width: 100%; aspect-ratio: 680 / 380; }
+/* The diagram is drawn in a fixed 680x380 viewBox, and the node emoji and
+   labels beside it are HTML at fixed px sizes. Letting the SVG stretch to a
+   full-width page scaled the circles up without scaling the labels, so it is
+   capped near its design size and centred instead. */
+.topo-canvas {
+  position: relative; width: 100%; max-width: 760px; margin: 0 auto;
+  aspect-ratio: 680 / 380;
+}
 .topo-canvas svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .topo-node-emoji { position: absolute; transform: translate(-50%, -50%); font-size: 26px; line-height: 1; }
 .topo-node-emoji:hover { text-decoration: none; }
@@ -610,6 +617,96 @@ td.nowrap { white-space: nowrap; }
 }
 .diff .line::before { content: '+ '; opacity: .55; }
 .diff .rest { font-size: 11.5px; color: var(--sub); margin-top: 6px; }
+
+/* ---------- notes tree and reader ---------- */
+
+/* The notes are a filesystem, so they are shown as one: the tree gives the
+   shape of what an agent knows, which a list ordered by mtime never did. */
+.notes-layout {
+  display: grid; grid-template-columns: minmax(240px, 22%) 1fr; gap: 14px;
+  align-items: start; min-height: 0;
+}
+.tree {
+  background: var(--surface); border: 1px solid var(--border-soft); border-radius: 12px;
+  overflow: hidden; position: sticky; top: 0; max-height: calc(100vh - 190px);
+  display: flex; flex-direction: column;
+}
+.tree-search { padding: 10px; border-bottom: 1px solid var(--border-soft); }
+.tree-search input {
+  width: 100%; height: 30px; padding: 0 10px; font-size: 12.5px;
+  background: var(--surface2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; outline: none;
+}
+.tree-body { overflow-y: auto; padding: 6px 0 10px; }
+.tnode {
+  display: flex; align-items: center; gap: 6px; padding-right: 10px;
+  height: 25px; font-size: 12.5px; cursor: pointer; color: var(--text);
+}
+.tnode:hover { background: var(--surface2); text-decoration: none; }
+.tdir { font-weight: 600; }
+.tcaret { color: var(--sub); width: 10px; flex: none; font-size: 10px; }
+.tname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tcount { flex: none; font-size: 10.5px; color: var(--sub); font-family: 'Red Hat Mono', monospace; }
+.twhen { flex: none; font-size: 10.5px; color: var(--sub); }
+.tfile { color: var(--sub); }
+.tfile.on { background: var(--info-bg); color: var(--link); font-weight: 600; }
+.tfile.on .twhen { color: var(--link); }
+
+.reader {
+  background: var(--surface); border: 1px solid var(--border-soft);
+  border-radius: 12px; overflow: hidden; min-width: 0;
+}
+.reader-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 11px 18px; border-bottom: 1px solid var(--border-soft); background: var(--surface2);
+}
+.reader-title { font-family: 'Red Hat Display', sans-serif; font-weight: 700; font-size: 15px; }
+.reader-path { font-size: 11px; color: var(--sub); }
+
+/* Rendered note. Everything is escaped before it is given structure, so no
+   markup an agent wrote can reach the page. */
+.md { padding: 18px 24px 28px; font-size: 13.5px; line-height: 1.65; max-width: 82ch; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {
+  font-family: 'Red Hat Display', sans-serif; font-weight: 700;
+  margin: 18px 0 6px; line-height: 1.3;
+}
+.md h1 { font-size: 20px; } .md h2 { font-size: 17px; } .md h3 { font-size: 15px; }
+.md h4, .md h5, .md h6 { font-size: 13.5px; }
+.md > :first-child { margin-top: 0; }
+.md p { margin: 0 0 9px; }
+.md ul, .md ol { margin: 0 0 10px; padding-left: 22px; }
+.md li { margin-bottom: 3px; }
+.md hr { border: none; border-top: 1px solid var(--border-soft); margin: 16px 0; }
+.md blockquote {
+  margin: 0 0 10px; padding: 2px 12px; color: var(--sub);
+  border-left: 3px solid var(--border);
+}
+.md code {
+  font-family: 'Red Hat Mono', monospace; font-size: 12px;
+  background: var(--surface2); border: 1px solid var(--border-soft);
+  border-radius: 4px; padding: 1px 4px;
+}
+.md-code {
+  font-family: 'Red Hat Mono', monospace; font-size: 12px; line-height: 1.5;
+  background: var(--surface2); border: 1px solid var(--border-soft);
+  border-radius: 8px; padding: 10px 12px; overflow-x: auto; margin: 0 0 10px;
+}
+.md-wl { color: var(--link); }
+.md-front { margin-bottom: 14px; }
+.md-front summary {
+  cursor: pointer; color: var(--sub); font-size: 11px;
+  text-transform: uppercase; letter-spacing: .05em; font-weight: 700;
+}
+.md-front pre {
+  font-family: 'Red Hat Mono', monospace; font-size: 11.5px; line-height: 1.5;
+  background: var(--surface2); border: 1px solid var(--border-soft);
+  border-radius: 8px; padding: 9px 11px; margin: 6px 0 0; overflow-x: auto;
+}
+
+@media (max-width: 1000px) {
+  .notes-layout { grid-template-columns: 1fr; }
+  .tree { position: static; max-height: 320px; }
+}
 
 /* ---------- session page ---------- */
 

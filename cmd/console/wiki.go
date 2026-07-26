@@ -96,6 +96,16 @@ var plumbingPages = map[string]bool{
 	"AGENTS.md": true, "WIKI.md": true, "inbox.md": true,
 }
 
+// Directories whose index page is a table of contents for one page type.
+// Those indexes say only "these pages are concepts", which the graph already
+// says with colour, so drawing them adds a hub that carries no information.
+// The wiki's root index is a different thing and is kept: it links across
+// types, and is what ties otherwise separate clusters together.
+var sectionDirs = map[string]bool{
+	"concepts": true, "entities": true, "syntheses": true,
+	"sources": true, "reports": true, "claims": true,
+}
+
 // graphExcluded reports whether a page is wiki machinery rather than content.
 //
 // The quarantine directory is the one that matters: OpenClaw parks superseded
@@ -117,13 +127,11 @@ func graphExcluded(p WikiPage) bool {
 			return true
 		}
 	}
-	// The index over sources/ links to nothing but sources, and sources are
-	// held back until a node is expanded — so it can only ever render as an
-	// isolated dot with 144 invisible edges.
-	if p.PageType == "" && strings.Contains(p.Path, "/sources/") {
+	base := path.Base(p.Path)
+	if base == "index.md" && sectionDirs[path.Base(path.Dir(p.Path))] {
 		return true
 	}
-	return plumbingPages[path.Base(p.Path)]
+	return plumbingPages[base]
 }
 
 // WikiRel is a typed edge the page declares to another page.
@@ -159,7 +167,13 @@ type wikiFrontmatter struct {
 
 // WikiPage is one page as the console reports it.
 type WikiPage struct {
-	Path            string      `json:"path"`
+	Path string `json:"path"`
+	// Key is this page's identity in the graph, and the only thing edges are
+	// expressed in terms of. It exists because a page's id is optional — the
+	// generated index pages carry no frontmatter at all — so a consumer that
+	// keyed nodes by id alone collapsed every index page onto the empty string
+	// and silently dropped each edge that referenced one.
+	Key             string      `json:"key"`
 	ID              string      `json:"id"`
 	PageType        string      `json:"pageType"`
 	Title           string      `json:"title"`
@@ -263,6 +277,15 @@ func titleCase(s string) string {
 	return strings.Join(words, " ")
 }
 
+// nodeKey is a page's identity in the graph: its id when it declares one, its
+// path otherwise, so a page without frontmatter can still take part.
+func nodeKey(p WikiPage) string {
+	if p.ID != "" {
+		return p.ID
+	}
+	return p.Path
+}
+
 // buildWikiGraph splits pages into the synthesized layer and its sources, and
 // resolves declared relationships into edges. An edge to a page that does not
 // exist is dropped rather than rendered as a dangling node.
@@ -275,11 +298,15 @@ func buildWikiGraph(pages []WikiPage) WikiGraph {
 	}
 	// Machinery is dropped before anything else looks at it, so an excluded
 	// page cannot become a node, an edge target, or a count.
+	// Identity is stamped on every page here, once, so that nodes and edges can
+	// never be keyed by two different rules.
 	kept := make([]WikiPage, 0, len(pages))
 	for _, p := range pages {
-		if !graphExcluded(p) {
-			kept = append(kept, p)
+		if graphExcluded(p) {
+			continue
 		}
+		p.Key = nodeKey(p)
+		kept = append(kept, p)
 	}
 	pages = kept
 
@@ -315,15 +342,6 @@ func buildWikiGraph(pages []WikiPage) WikiGraph {
 	for _, p := range pages {
 		byPath[p.Path] = p
 	}
-	// A node's key is its id when it has one and its path otherwise, so every
-	// page can take part in the graph.
-	nodeKey := func(p WikiPage) string {
-		if p.ID != "" {
-			return p.ID
-		}
-		return p.Path
-	}
-
 	seen := map[string]bool{}
 	addEdge := func(from, to, kind string, weight, confidence float64) {
 		if from == "" || to == "" || from == to {
@@ -340,7 +358,7 @@ func buildWikiGraph(pages []WikiPage) WikiGraph {
 	}
 
 	for _, p := range pages {
-		from := nodeKey(p)
+		from := p.Key
 		if synthesizedTypes[p.PageType] {
 			for _, rel := range p.Relationships {
 				if known[rel.TargetID] {
@@ -359,7 +377,7 @@ func buildWikiGraph(pages []WikiPage) WikiGraph {
 			if !ok {
 				continue
 			}
-			addEdge(from, nodeKey(tp), "link", 0, 0)
+			addEdge(from, tp.Key, "link", 0, 0)
 		}
 	}
 	return graph

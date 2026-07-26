@@ -659,18 +659,19 @@ func errCode(err error) string {
 // Note content is deliberately not returned. It is fetched per note by
 // memoryNote when the reader opens one, which keeps this response small enough
 // to poll.
-func (s *Store) memoryFeed(ctx context.Context, limit int) ([]MemoryWrite, *Snapshot, error) {
+func (s *Store) memoryFeed(ctx context.Context, limit int) ([]MemoryWrite, int, *Snapshot, error) {
 	snap := s.snapshot()
 
 	notes, err := s.source.memoryNotes(ctx)
 	if err != nil {
-		return nil, snap, err
+		return nil, 0, snap, err
 	}
 	if changed := s.watch.pending(notes); len(changed) > 0 {
 		bodies, _ := s.source.readNotes(ctx, changed)
 		s.watch.observe(notes, bodies, s.now())
 	}
 
+	total := len(notes)
 	sort.SliceStable(notes, func(i, j int) bool { return notes[i].ModTime > notes[j].ModTime })
 	if len(notes) > limit {
 		notes = notes[:limit]
@@ -703,7 +704,7 @@ func (s *Store) memoryFeed(ctx context.Context, limit int) ([]MemoryWrite, *Snap
 		}
 		out = append(out, entry)
 	}
-	return out, snap, nil
+	return out, total, snap, nil
 }
 
 // memoryNote reads one note in full, for the reader pane.

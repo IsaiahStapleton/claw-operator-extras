@@ -334,14 +334,17 @@ func (s *server) handleMemory(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
 		return
 	}
-	limit := clampInt(r.URL.Query().Get("limit"), 50, 1, 500)
-	writes, snap, err := store.memoryFeed(r.Context(), limit)
+	limit := clampInt(r.URL.Query().Get("limit"), 50, 1, 2000)
+	writes, total, snap, err := store.memoryFeed(r.Context(), limit)
 	if err != nil {
 		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"writes": writes,
+		// How many notes exist, so a truncated listing can say so rather than
+		// presenting itself as the whole vault.
+		"total": total,
 		// Changes actually observed, with the lines that appeared. Empty only
 		// on the very first read of a vault, when there is no previous content
 		// to diff against.
