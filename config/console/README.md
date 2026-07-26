@@ -10,13 +10,21 @@ The console runs in its own namespace, not in a Claw's.
 ```sh
 oc new-project agent-console
 
-# The oauth-proxy needs a session secret.
+# The oauth-proxy signs its browser session cookie with this key, and will not
+# start without it. It is a credential, so it is created here rather than
+# checked in. oauth-proxy base64-decodes the value and uses it as an AES key,
+# so it must decode to 16, 24, or 32 bytes — 24 here, matching the deployer's
+# own openclaw-deployer-cookie.
 oc create secret generic agent-console-cookie \
-  --from-literal=session_secret="$(head -c 32 /dev/urandom | base64)"
+  --from-literal=session_secret="$(head -c 24 /dev/urandom | base64)"
 
 oc apply -k config/console
 oc get route agent-console -o jsonpath='{.spec.host}{"\n"}'
 ```
+
+If the `oauth-proxy` container crash-loops on startup, this secret is the first
+thing to check: a value that does not decode to a valid AES key length fails
+there rather than at apply time.
 
 ## How access works
 
