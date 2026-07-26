@@ -1,0 +1,16 @@
+FROM golang:1.25 AS builder
+WORKDIR /workspace
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd/console ./cmd/console
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/agent-console ./cmd/console
+
+FROM registry.access.redhat.com/ubi9-micro:latest
+COPY --from=builder /out/agent-console /usr/local/bin/agent-console
+# The binary itself depends on no particular UID and never writes anywhere, so
+# it runs fine under restricted-v2's arbitrary-UID assignment. Note that
+# *reading* a Claw's data additionally requires matching that Claw's UID,
+# because OpenClaw stores sessions 0600 — see config/console/README.md.
+USER 65532:65532
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/agent-console"]
