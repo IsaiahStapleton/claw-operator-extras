@@ -19,6 +19,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -116,6 +117,84 @@ func TestTranscriptWithoutTrajectoryYieldsDerivedRun(t *testing.T) {
 	}
 	if run.Prompt != "deploy the stack" {
 		t.Fatalf("prompt = %q, want the first user message", run.Prompt)
+	}
+}
+
+// A prompt the trajectory dropped for size is usually still in the plain
+// transcript, which is written separately and has no such limit.
+func TestTruncatedPromptIsRecoveredFromTranscript(t *testing.T) {
+	now := time.Now().UTC()
+	promptAt := now.Add(-5 * time.Minute)
+	root := makeDataDir(t, map[string]map[string][]string{
+		"main": {"sess-1": {
+			ev("session.started", evOpts{TS: iso(now.Add(-6 * time.Minute))}),
+			ev("prompt.submitted", evOpts{TS: iso(promptAt), Data: map[string]any{
+				"truncated": true, "originalBytes": float64(301522),
+				"reason": "trajectory-event-size-limit", "droppedFields": []any{"prompt"}}}),
+			ev("model.completed", evOpts{TS: iso(now.Add(-4 * time.Minute))}),
+		}},
+	})
+	addFile(t, root, "main", "sess-1.jsonl",
+		`{"type":"message","timestamp":"`+iso(promptAt)+`","message":{"role":"user","content":"audit the gateway crash"}}`+"\n"+
+			`{"type":"message","timestamp":"`+iso(now.Add(-4*time.Minute))+`","message":{"role":"assistant","content":"on it"}}`+"\n", now)
+
+	snap := newStore(root, 0, nil).snapshot()
+	if len(snap.Runs) != 1 {
+		t.Fatalf("runs = %d, want 1", len(snap.Runs))
+	}
+	run := snap.Runs[0]
+	if run.Prompt != "audit the gateway crash" {
+		t.Fatalf("prompt = %q, want it recovered from the transcript", run.Prompt)
+	}
+	if run.PromptSource != "transcript" {
+		t.Fatalf("promptSource = %q, want %q so the UI can show provenance", run.PromptSource, "transcript")
+	}
+	if !run.PromptTruncated {
+		t.Fatal("the run should still record that its trajectory event was truncated")
+	}
+}
+
+// Guessing is worse than admitting the gap: a message far from the prompt
+// belongs to some other run, so the truncation marker must stand.
+func TestDistantTranscriptMessageDoesNotBecomeThePrompt(t *testing.T) {
+	now := time.Now().UTC()
+	promptAt := now.Add(-30 * time.Minute)
+	root := makeDataDir(t, map[string]map[string][]string{
+		"main": {"sess-1": {
+			ev("prompt.submitted", evOpts{TS: iso(promptAt), Data: map[string]any{
+				"truncated": true, "reason": "trajectory-event-size-limit"}}),
+			ev("model.completed", evOpts{TS: iso(now.Add(-29 * time.Minute))}),
+		}},
+	})
+	// Only user message sits 20 minutes away — a different run's prompt.
+	addFile(t, root, "main", "sess-1.jsonl",
+		`{"type":"message","timestamp":"`+iso(now.Add(-10*time.Minute))+`","message":{"role":"user","content":"unrelated later question"}}`+"\n", now)
+
+	run := newStore(root, 0, nil).snapshot().Runs[0]
+	if run.PromptSource != "" {
+		t.Fatalf("promptSource = %q, want empty — no message was close enough to trust", run.PromptSource)
+	}
+	if !strings.Contains(run.Prompt, "dropped by the trajectory size limit") {
+		t.Fatalf("prompt = %q, want the truncation marker to stand", run.Prompt)
+	}
+}
+
+func TestTranscriptRecoveryHandlesBlockListContent(t *testing.T) {
+	now := time.Now().UTC()
+	at := now.Add(-3 * time.Minute)
+	root := makeDataDir(t, map[string]map[string][]string{
+		"main": {"sess-1": {
+			ev("prompt.submitted", evOpts{TS: iso(at), Data: map[string]any{
+				"truncated": true, "reason": "trajectory-event-size-limit"}}),
+			ev("model.completed", evOpts{TS: iso(now.Add(-2 * time.Minute))}),
+		}},
+	})
+	addFile(t, root, "main", "sess-1.jsonl",
+		`{"type":"message","timestamp":"`+iso(at)+`","message":{"role":"user","content":[{"type":"text","text":"block form prompt"}]}}`+"\n", now)
+
+	run := newStore(root, 0, nil).snapshot().Runs[0]
+	if run.Prompt != "block form prompt" {
+		t.Fatalf("prompt = %q, want the text extracted from the block list", run.Prompt)
 	}
 }
 

@@ -444,8 +444,15 @@ function renderRunsTable(lockedAgent) {
     return `<tr data-act="open-run" data-agent="${esc(r.agent)}" data-session="${esc(r.sessionId)}">
       <td class="when" title="${esc(exact(r.startedAt))}">${rel(r.startedAt, state.now)}</td>
       ${lockedAgent ? '' : `<td class="nowrap">${agentLink(r.agent)}</td>`}
-      <td class="prompt" title="${esc(r.prompt)}">${esc(r.prompt)}${r.source === 'transcript'
-        ? ` <span class="chip" style="background:var(--surface2);color:var(--sub);border:1px solid var(--border-soft);font-size:10px">transcript</span>` : ''}</td>
+      <td class="prompt" title="${esc(r.prompt)}${r.promptSource === 'transcript'
+        ? '\n\n(recovered from the session transcript — the trajectory event was truncated)' : ''}"><div class="prompt-wrap">
+        ${r.source === 'transcript'
+          ? `<span class="chip tag" style="background:var(--surface2);color:var(--sub);border:1px solid var(--border-soft)">transcript</span>` : ''}
+        ${r.promptSource === 'transcript'
+          ? `<span class="chip tag" style="background:var(--warn-bg);color:var(--warn)"
+              title="The trajectory event was truncated; this prompt was recovered from the session transcript.">recovered</span>` : ''}
+        <span class="prompt-text">${esc(r.prompt)}</span>
+      </div></td>
       <td>${outcomePill(r.outcome)}</td>
       <td class="num">${r.steps || 0}</td>
       <td class="num">${tok(r.tokens && r.tokens.total)}</td>

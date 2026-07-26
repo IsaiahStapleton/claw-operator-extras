@@ -306,7 +306,14 @@ td { padding: 7px 8px; }
 td:first-child { padding-left: 16px; }
 td:last-child { padding-right: 16px; }
 td.when { white-space: nowrap; color: var(--sub); }
-td.prompt { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Provenance chips stay pinned; only the prompt text truncates, so a
+   "recovered" marker is never pushed out of view by a long prompt. The flex
+   box is an inner wrapper — making the cell itself flex would take it out of
+   table layout and collapse the column. */
+td.prompt { max-width: 340px; }
+td.prompt .prompt-wrap { display: flex; align-items: center; gap: 6px; }
+td.prompt .chip.tag { flex: none; font-size: 10px; }
+td.prompt .prompt-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 td.nowrap { white-space: nowrap; }
 
 .empty { padding: 40px; text-align: center; color: var(--sub); }
