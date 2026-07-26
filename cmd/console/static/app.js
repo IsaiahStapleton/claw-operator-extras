@@ -107,6 +107,7 @@ const state = {
   agents: [],
   runs: [],
   memory: [],
+  observed: [],
   handoffs: [],
   meta: { ok: true, error: '', badLines: 0, scannedFiles: 0, unreadableFiles: 0 },
   gateway: { status: 'disabled' },
@@ -249,6 +250,7 @@ async function refresh() {
       agents: agents.agents || [],
       runs: runs.runs || [],
       memory: memory.writes || [],
+      observed: memory.observed || [],
       handoffs: handoffs.handoffs || [],
       meta: health.data || state.meta,
       gateway: health.gateway || { status: 'disabled' },
@@ -985,6 +987,53 @@ function viewTopology() {
 
 function viewMemory() {
   const { q } = route();
+  const tab = q.tab === 'notes' ? 'notes' : 'writes';
+  if (tab === 'writes') return viewMemoryWrites();
+  return viewMemoryNotes();
+}
+
+function memoryTabs(active) {
+  return [['writes', 'Observed writes'], ['notes', 'All notes']].map(([id, label]) =>
+    `<button class="tab${active === id ? ' active' : ''}" data-act="tab" data-tab="${id === 'writes' ? '' : id}">${label}</button>`).join('');
+}
+
+// What actually changed, and when. This is the console's own observation:
+// OpenClaw records nothing about memory writes, so anything before this
+// console started watching is simply not knowable.
+function viewMemoryWrites() {
+  const rows = (state.observed || []).map((e) => {
+    const m = e.agent ? agentMeta(e.agent) : null;
+    const lines = (e.addedLines || []).filter((l) => l.trim());
+    return `<div class="card clip" style="margin-bottom:10px">
+      <div class="mem-group-head" style="cursor:default">
+        <span class="chip" style="background:var(--ok-bg);color:var(--ok)">+${e.added}</span>
+        ${e.removed ? `<span class="chip" style="background:var(--err-bg);color:var(--err)">−${e.removed}</span>` : ''}
+        <span class="mem-path">${esc(e.notePath)}</span>
+        <span class="grow"></span>
+        ${m ? `<span>${m.emoji} ${esc(m.title)}</span>` : '<span style="color:var(--sub)">shared</span>'}
+        <span class="when" title="${esc(exact(e.ts))}">${rel(e.ts, state.now)}</span>
+      </div>
+      ${lines.length ? `<pre class="mono" style="margin:0;padding:10px 16px 14px 42px;white-space:pre-wrap;font-size:12px;line-height:1.55;color:var(--ok)">${lines.map((l) => esc(l)).join('\n')}</pre>` : ''}
+    </div>`;
+  }).join('');
+
+  return `<div class="page narrow">
+    <div class="page-head">
+      <h1>Memory</h1>
+      <span style="color:var(--sub);font-size:13px">what the agents wrote, and when</span>
+    </div>
+    <div class="card clip"><div class="tabs">${memoryTabs('writes')}</div></div>
+    ${rows || `<div class="empty-state"><div class="icon">👁️</div>
+      <h2 class="display">No writes observed yet</h2>
+      <p>OpenClaw records nothing about memory writes, so this console detects them by
+      watching the notes change. It has not seen a change yet — writes that happened before
+      it started watching cannot be recovered. Every note already on disk is under
+      <b>All notes</b>.</p></div>`}
+  </div>`;
+}
+
+function viewMemoryNotes() {
+  const { q } = route();
   const fa = q.agent || '';
   const fp = q.path || '';
   const ws = state.memory.filter((w) => (!fa || w.agent === fa) && (!fp || String(w.notePath).startsWith(fp)));
@@ -1025,9 +1074,10 @@ function viewMemory() {
   }).join('');
 
   return `<div class="page narrow">
+    <div class="card clip"><div class="tabs">${memoryTabs('notes')}</div></div>
     <div class="page-head">
-      <h1>Memory vault</h1>
-      <span style="color:var(--sub);font-size:13px">what agents commit to long-term memory, and who wrote it</span>
+      <h1>All notes</h1>
+      <span style="color:var(--sub);font-size:13px">every note on disk, newest first</span>
       <span class="spacer"></span>
       <select class="field" data-act="mem-agent">${agentOptions}</select>
       <input class="field path" data-act="mem-path" placeholder="Filter by path prefix, e.g. memory-map/tasks/" value="${esc(fp)}">

@@ -94,6 +94,10 @@ type Store struct {
 	cached  *Snapshot
 	cachedT time.Time
 	parsed  map[string]parsedSession // "<agent>/<file>" -> parsed content
+	// watched holds the last content seen per memory note, so a change can be
+	// diffed into an actual write event. writeEvents is the observed history.
+	watched     map[string]noteSnapshot
+	writeEvents []MemoryWriteEvent
 }
 
 func newStoreFromSource(src sessionSource, cacheTTL time.Duration, excludeAgents []string) *Store {
@@ -663,6 +667,10 @@ func (s *Store) memoryFeed(ctx context.Context, limit int) ([]MemoryWrite, *Snap
 	}
 
 	bodies, _ := s.source.readNotes(ctx, notes)
+
+	s.mu.Lock()
+	s.observeNotes(notes, bodies, s.now())
+	s.mu.Unlock()
 
 	out := make([]MemoryWrite, 0, len(notes))
 	for _, n := range notes {

@@ -333,7 +333,12 @@ func (s *server) handleMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"writes": writes, "data": toDataStatus(snap),
+		"writes": writes,
+		// Changes actually observed since this console started watching, with
+		// the lines that appeared. Empty on a cold start: nothing before the
+		// console was running is recoverable.
+		"observed": store.recentWrites(100),
+		"data":     toDataStatus(snap),
 	})
 }
 
