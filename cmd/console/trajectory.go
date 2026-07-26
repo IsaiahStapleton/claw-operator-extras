@@ -64,6 +64,16 @@ type Run struct {
 	Model       string `json:"model"`
 	Provider    string `json:"provider"`
 	Source      string `json:"source,omitempty"`
+	// PromptTruncated marks a run whose prompt.submitted event the runtime
+	// emptied for exceeding its size limit. PromptSource names where the
+	// prompt finally came from when it was recovered elsewhere, so the UI can
+	// show provenance rather than implying it came from the trajectory.
+	PromptTruncated bool   `json:"promptTruncated,omitempty"`
+	PromptSource    string `json:"promptSource,omitempty"`
+	// promptAt is when the prompt was actually submitted, which can trail the
+	// run's first event by minutes while context is compiled. Recovery matches
+	// on this, not StartedAt. Internal to the scan; not part of the API.
+	promptAt string
 }
 
 // parseTrajectory tolerantly parses JSONL. Audit principle: never silently
@@ -255,9 +265,12 @@ func deriveRuns(agent, sessionID string, events []Event, now time.Time) []Run {
 		}
 
 		prompt := "(no prompt recorded)"
+		promptTruncated, promptAt := false, ""
 		for _, e := range evs {
 			if e.Type == "prompt.submitted" {
 				prompt = promptText(e)
+				promptTruncated = isTruncated(e)
+				promptAt = e.TS
 				break
 			}
 		}
@@ -281,6 +294,7 @@ func deriveRuns(agent, sessionID string, events []Event, now time.Time) []Run {
 			StartedAt: firstTS, LastEventAt: lastTS, Outcome: outcome,
 			Steps: len(evs), Tokens: tokens, Prompt: prompt,
 			Model: first.ModelID, Provider: first.Provider,
+			PromptTruncated: promptTruncated, promptAt: promptAt,
 		})
 	}
 	sort.SliceStable(runs, func(i, j int) bool {

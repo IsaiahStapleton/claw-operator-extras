@@ -154,7 +154,12 @@ func (s *Store) scan() *Snapshot {
 				}
 			}
 			snap.Sessions = append(snap.Sessions, Session{Agent: agent, SessionID: sessionID, Events: events})
-			snap.Runs = append(snap.Runs, deriveRuns(agent, sessionID, events, now)...)
+			runs := deriveRuns(agent, sessionID, events, now)
+			// A prompt the runtime dropped for size often survives in the
+			// plain transcript, which is written separately and is not
+			// subject to the trajectory event limit.
+			recoverTruncatedPrompts(filepath.Join(sessDir, sessionID+".jsonl"), runs)
+			snap.Runs = append(snap.Runs, runs...)
 		}
 
 		// Plain transcripts without a trajectory sidecar are sessions from
@@ -182,6 +187,136 @@ func (s *Store) scan() *Snapshot {
 		return tsMillis(snap.Runs[i].StartedAt) > tsMillis(snap.Runs[j].StartedAt)
 	})
 	return snap
+}
+
+// promptMatchWindow bounds how far a transcript message may sit from a run's
+// start and still be considered that run's prompt. The two are written within
+// moments of each other, so a wide window would risk attaching the wrong
+// prompt in a session that contains several runs.
+const promptMatchWindow = 2 * time.Minute
+
+// userMessage is one timestamped user turn recovered from a transcript.
+type userMessage struct {
+	ms   int64
+	text string
+}
+
+// recoverTruncatedPrompts fills in prompts the trajectory lost to its size
+// limit, reading them from the session's plain transcript and matching by
+// timestamp. Runs keep the truncation marker when nothing matches, so a miss
+// degrades to the honest message rather than to a wrong prompt.
+func recoverTruncatedPrompts(transcriptPath string, runs []Run) {
+	need := false
+	for i := range runs {
+		if runs[i].PromptTruncated {
+			need = true
+			break
+		}
+	}
+	if !need {
+		return // do not touch the filesystem for sessions that are intact
+	}
+	msgs := readUserMessages(transcriptPath)
+	if len(msgs) == 0 {
+		return
+	}
+	for i := range runs {
+		if !runs[i].PromptTruncated {
+			continue
+		}
+		// Anchor on the prompt event, not the run's first event: context
+		// compilation can put minutes between the two.
+		anchor := tsMillis(runs[i].promptAt)
+		if anchor == 0 {
+			anchor = tsMillis(runs[i].StartedAt)
+		}
+		if anchor == 0 {
+			continue
+		}
+		best, bestDelta := "", int64(-1)
+		for _, m := range msgs {
+			if m.ms == 0 {
+				continue
+			}
+			delta := m.ms - anchor
+			if delta < 0 {
+				delta = -delta
+			}
+			if delta <= promptMatchWindow.Milliseconds() && (bestDelta < 0 || delta < bestDelta) {
+				best, bestDelta = m.text, delta
+			}
+		}
+		if best != "" {
+			runs[i].Prompt = clip(best, 160)
+			runs[i].PromptSource = "transcript"
+		}
+	}
+}
+
+// readUserMessages pulls timestamped user turns out of a transcript. Content
+// is either a plain string or a block list, depending on the backend.
+func readUserMessages(path string) []userMessage {
+	text, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var out []userMessage
+	for _, raw := range strings.Split(string(text), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+			continue
+		}
+		if typ, _ := obj["type"].(string); typ != "message" {
+			continue
+		}
+		msg, _ := obj["message"].(map[string]any)
+		if msg == nil {
+			continue
+		}
+		if role, _ := msg["role"].(string); role != "user" {
+			continue
+		}
+		body := textOfContent(msg["content"])
+		if body == "" {
+			continue
+		}
+		ts := obj["timestamp"]
+		if ts == nil {
+			ts = msg["timestamp"]
+		}
+		iso, _ := anyToISO(ts)
+		out = append(out, userMessage{ms: tsMillis(iso), text: body})
+	}
+	return out
+}
+
+// textOfContent flattens a message body to text, tolerating both the plain
+// string form and the block-list form.
+func textOfContent(v any) string {
+	switch c := v.(type) {
+	case string:
+		return strings.TrimSpace(c)
+	case []any:
+		var parts []string
+		for _, b := range c {
+			blk, ok := b.(map[string]any)
+			if !ok {
+				continue
+			}
+			if t, _ := blk["type"].(string); t != "" && t != "text" {
+				continue
+			}
+			if s, ok := blk["text"].(string); ok && strings.TrimSpace(s) != "" {
+				parts = append(parts, strings.TrimSpace(s))
+			}
+		}
+		return strings.TrimSpace(strings.Join(parts, " "))
+	}
+	return ""
 }
 
 // deriveTranscriptRun derives a lightweight run from a plain transcript
