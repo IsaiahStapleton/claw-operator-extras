@@ -108,7 +108,8 @@ func TestDeriveRunsSplitsMultiRunSessionsAndSumsTokens(t *testing.T) {
 		ev("prompt.submitted", evOpts{RunID: "run-b", TS: iso(now.Add(-10 * time.Minute)),
 			Data: map[string]any{"prompt": "second task"}}),
 		ev("model.completed", evOpts{RunID: "run-b", TS: iso(now.Add(-9 * time.Minute)),
-			Data: map[string]any{"usage": map[string]any{"input": float64(7), "output": float64(3), "total": float64(11)}}}),
+			Data: map[string]any{"usage": map[string]any{"input": float64(7), "output": float64(3),
+				"cacheRead": float64(900), "cacheWrite": float64(100), "total": float64(1010)}}}),
 	)
 
 	runs := deriveRuns("main", "sess-1", events, now)
@@ -122,8 +123,14 @@ func TestDeriveRunsSplitsMultiRunSessionsAndSumsTokens(t *testing.T) {
 	if runs[1].Tokens.Total != 120 {
 		t.Fatalf("run-a total tokens = %d, want 120 (input+output when total is absent)", runs[1].Tokens.Total)
 	}
-	if runs[0].Tokens.Total != 11 {
-		t.Fatalf("run-b total tokens = %d, want 11 (provider-supplied total wins)", runs[0].Tokens.Total)
+	// The provider's own total folds in cache traffic, which on a real Claw
+	// overstated a run by roughly fifty times. Total means what the agent read
+	// and wrote; cache is reported separately because it is a different thing.
+	if runs[0].Tokens.Total != 10 {
+		t.Fatalf("run-b total tokens = %d, want 10 (input+output, not the provider's cache-inclusive total)", runs[0].Tokens.Total)
+	}
+	if runs[0].Tokens.Cache != 1000 {
+		t.Fatalf("run-b cache tokens = %d, want 1000 (cacheRead+cacheWrite)", runs[0].Tokens.Cache)
 	}
 	if runs[1].Prompt != "first task" {
 		t.Fatalf("run-a prompt = %q, want %q", runs[1].Prompt, "first task")

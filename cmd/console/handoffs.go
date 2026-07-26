@@ -254,7 +254,11 @@ type MemoryWrite struct {
 	RunID     string `json:"runId"`
 	Tool      string `json:"tool"`
 	NotePath  string `json:"notePath"`
-	Content   string `json:"content"`
+	Content   string `json:"content,omitempty"`
+	// Size is the note's size on disk. The listing carries it instead of the
+	// content so the memory page stays cheap to poll; content is fetched per
+	// note when one is opened.
+	Size int64 `json:"size,omitempty"`
 }
 
 // extractMemoryWrites answers "what are my agents committing to memory?" —

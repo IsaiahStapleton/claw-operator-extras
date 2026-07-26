@@ -9,6 +9,12 @@ metadata:
       [{"from":{"kind":"ImageStreamTag","name":"agent-console:latest"},"fieldPath":"spec.template.spec.containers[?(@.name==\"app\")].image"}]
 spec:
   replicas: 1
+  # The state volume is ReadWriteOnce, so a rolling update would deadlock: the
+  # new pod cannot attach the volume until the old pod releases it, and the old
+  # pod is not terminated until the new one is ready. Recreate accepts a few
+  # seconds of downtime instead.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: agent-console
@@ -32,6 +38,11 @@ spec:
               value: /home/node/.openclaw/agents
             - name: CLAW_CONTAINER
               value: gateway
+            # Where observed memory writes are kept. Without it the console
+            # still works, but its record of what agents wrote is lost on every
+            # restart, which the memory page then says outright.
+            - name: CONSOLE_STATE_DIR
+              value: /var/lib/agent-console
             # Unset by design: the console then reports gateway health as
             # "disabled" rather than pretending to know. Point it at the Claw
             # service to enable the check.
@@ -46,6 +57,9 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/agent-console
           resources:
             requests:
               cpu: 10m
@@ -115,3 +129,6 @@ spec:
         - name: cookie-secret
           secret:
             secretName: agent-console-cookie
+        - name: state
+          persistentVolumeClaim:
+            claimName: agent-console-state

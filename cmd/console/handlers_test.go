@@ -224,6 +224,72 @@ func TestHandleRunDetailReturnsTrajectoryWithLineage(t *testing.T) {
 	}
 }
 
+// A session file holds every run of one conversation. The detail response must
+// carry them all, or the page cannot tell the run you opened from the forty
+// others recorded beside it.
+func TestHandleRunDetailReturnsEveryRunOfTheSession(t *testing.T) {
+	now := time.Now().UTC()
+	root := makeDataDir(t, map[string]map[string][]string{
+		"main": {"sess-multi": {
+			ev("prompt.submitted", evOpts{RunID: "run-1", TS: iso(now.Add(-30 * time.Minute)),
+				Data: map[string]any{"prompt": "first"}}),
+			ev("model.completed", evOpts{RunID: "run-1", TS: iso(now.Add(-29 * time.Minute))}),
+			ev("prompt.submitted", evOpts{RunID: "run-2", TS: iso(now.Add(-10 * time.Minute)),
+				Data: map[string]any{"prompt": "second"}}),
+			ev("model.completed", evOpts{RunID: "run-2", TS: iso(now.Add(-9 * time.Minute))}),
+		}},
+	})
+	s := testServer(t, root)
+	req := httptest.NewRequest("GET", "/api/runs/main/sess-multi", nil)
+	rec := httptest.NewRecorder()
+	s.handleRunDetail(rec, req, "main", "sess-multi")
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	runs, _ := body["runs"].([]any)
+	if len(runs) != 2 {
+		t.Fatalf("runs = %d, want both runs of the session", len(runs))
+	}
+	// Oldest first: that is the order the conversation happened in.
+	if got := runs[0].(map[string]any)["prompt"]; got != "first" {
+		t.Fatalf("first run prompt = %v, want the earliest run", got)
+	}
+	// Every event must name its run, or the page cannot group them.
+	for _, e := range body["events"].([]any) {
+		if e.(map[string]any)["runId"] == "" {
+			t.Fatal("event without a runId cannot be attributed to a run")
+		}
+	}
+}
+
+func TestHandleMemoryNoteReadsOneNote(t *testing.T) {
+	s := testServer(t, fixtureRoot(t))
+	req := httptest.NewRequest("GET", "/api/memory/note?path=workspace/memory/gateway.md", nil)
+	rec := httptest.NewRecorder()
+	s.handleMemoryNote(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["content"] == "" {
+		t.Fatal("content is empty; the notes reader has nothing to show")
+	}
+
+	// The listing itself must not carry content, or every poll drags the whole
+	// vault back across the exec channel.
+	_, mem := getJSON(t, s, "GET", "/api/memory", s.handleMemory)
+	for _, w := range mem["writes"].([]any) {
+		if c, ok := w.(map[string]any)["content"]; ok && c != "" {
+			t.Fatalf("listing carries note content (%v); it is fetched per note instead", c)
+		}
+	}
+}
+
 func TestHandleRunDetailFallsBackToTranscript(t *testing.T) {
 	now := time.Now().UTC()
 	root := makeDataDir(t, map[string]map[string][]string{"cli": {}})

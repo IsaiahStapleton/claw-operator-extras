@@ -24,6 +24,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 
 	"regexp"
@@ -94,28 +95,30 @@ type Store struct {
 	cached  *Snapshot
 	cachedT time.Time
 	parsed  map[string]parsedSession // "<agent>/<file>" -> parsed content
-	// watched holds the last content seen per memory note, so a change can be
-	// diffed into an actual write event. writeEvents is the observed history.
-	watched       map[string]noteSnapshot
-	writeEvents   []MemoryWriteEvent
-	watchingSince time.Time
+	// watch remembers the last content seen per memory note so a change can be
+	// diffed into an actual write event. It is shared by every user viewing the
+	// same Claw and outlives this store, so the record survives a restart.
+	watch *memoryWatcher
 }
 
-func newStoreFromSource(src sessionSource, cacheTTL time.Duration, excludeAgents []string) *Store {
+func newStoreFromSource(src sessionSource, cacheTTL time.Duration, excludeAgents []string, watch *memoryWatcher) *Store {
 	ex := map[string]bool{}
 	for _, a := range excludeAgents {
 		if a = strings.TrimSpace(a); a != "" {
 			ex[a] = true
 		}
 	}
+	if watch == nil {
+		watch = newMemoryWatcher("")
+	}
 	return &Store{source: src, cacheTTL: cacheTTL, excluded: ex, now: time.Now,
-		parsed: map[string]parsedSession{}}
+		parsed: map[string]parsedSession{}, watch: watch}
 }
 
 // newStore keeps the local-directory constructor the tests and
 // `make console-run-local` use.
 func newStore(dataDir string, cacheTTL time.Duration, excludeAgents []string) *Store {
-	return newStoreFromSource(dirSource{root: dataDir}, cacheTTL, excludeAgents)
+	return newStoreFromSource(dirSource{root: dataDir}, cacheTTL, excludeAgents, nil)
 }
 
 func (s *Store) snapshot() *Snapshot {
@@ -642,10 +645,20 @@ func errCode(err error) string {
 	return err.Error()
 }
 
-// memoryFeed lists the Claw's durable notes newest first, with content for the
-// page being shown. Attribution comes from tool calls where one recorded the
-// write; notes written by background consolidation have none, and are reported
-// with the agent inferred from their path rather than left out.
+// memoryFeed lists the Claw's durable notes newest first and advances the
+// watcher over the whole vault. Attribution comes from tool calls where one
+// recorded the write; notes written by background consolidation have none, and
+// are reported with the agent inferred from their path rather than left out.
+//
+// Two things matter about the ordering here. The watcher sees the FULL index,
+// not the truncated listing, or a note that fell outside the newest-N would be
+// baselined only when it happened to resurface and would then be announced as
+// newly created. And only notes whose size or mtime moved are actually read, so
+// a five-second poll of a settled vault transfers nothing.
+//
+// Note content is deliberately not returned. It is fetched per note by
+// memoryNote when the reader opens one, which keeps this response small enough
+// to poll.
 func (s *Store) memoryFeed(ctx context.Context, limit int) ([]MemoryWrite, *Snapshot, error) {
 	snap := s.snapshot()
 
@@ -653,6 +666,11 @@ func (s *Store) memoryFeed(ctx context.Context, limit int) ([]MemoryWrite, *Snap
 	if err != nil {
 		return nil, snap, err
 	}
+	if changed := s.watch.pending(notes); len(changed) > 0 {
+		bodies, _ := s.source.readNotes(ctx, changed)
+		s.watch.observe(notes, bodies, s.now())
+	}
+
 	sort.SliceStable(notes, func(i, j int) bool { return notes[i].ModTime > notes[j].ModTime })
 	if len(notes) > limit {
 		notes = notes[:limit]
@@ -667,12 +685,6 @@ func (s *Store) memoryFeed(ctx context.Context, limit int) ([]MemoryWrite, *Snap
 		}
 	}
 
-	bodies, _ := s.source.readNotes(ctx, notes)
-
-	s.mu.Lock()
-	s.observeNotes(notes, bodies, s.now())
-	s.mu.Unlock()
-
 	out := make([]MemoryWrite, 0, len(notes))
 	for _, n := range notes {
 		entry := MemoryWrite{
@@ -680,7 +692,7 @@ func (s *Store) memoryFeed(ctx context.Context, limit int) ([]MemoryWrite, *Snap
 			Agent:    agentOfNotePath(n.Path),
 			Tool:     "file",
 			NotePath: n.Path,
-			Content:  clipBytes(string(bodies[n.Path]), 4000),
+			Size:     n.Size,
 		}
 		// Prefer a recorded tool call's agent and session when one exists.
 		for path, w := range attribution {
@@ -692,6 +704,25 @@ func (s *Store) memoryFeed(ctx context.Context, limit int) ([]MemoryWrite, *Snap
 		out = append(out, entry)
 	}
 	return out, snap, nil
+}
+
+// memoryNote reads one note in full, for the reader pane.
+func (s *Store) memoryNote(ctx context.Context, notePath string) (string, error) {
+	notes, err := s.source.memoryNotes(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, n := range notes {
+		if n.Path != notePath {
+			continue
+		}
+		bodies, err := s.source.readNotes(ctx, []memoryNote{n})
+		if err != nil {
+			return "", err
+		}
+		return string(bodies[n.Path]), nil
+	}
+	return "", apiError{StatusCode: http.StatusNotFound, Message: "note not found"}
 }
 
 // agentOfNotePath attributes a note to the agent whose directory holds it.

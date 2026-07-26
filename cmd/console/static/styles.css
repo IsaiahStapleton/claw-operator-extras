@@ -194,8 +194,11 @@ select, input, button { font-family: inherit; font-size: inherit; }
 }
 
 .main { flex: 1; min-width: 0; overflow-y: auto; position: relative; }
-.page { padding: 20px 24px 32px; display: flex; flex-direction: column; gap: 16px; max-width: 1280px; }
-.page.narrow { max-width: 1100px; }
+/* Pages fill the window. A capped column left most of a wide screen empty
+   while the tables it was capping had to truncate their own content. */
+.page { padding: 20px 32px 40px; display: flex; flex-direction: column; gap: 16px; }
+/* Kept as a hook for prose-heavy pages; it no longer narrows the layout. */
+.page.narrow { max-width: none; }
 .page h1 { margin: 0; font-size: 22px; font-weight: 700; }
 .page-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .crumbs { font-size: 12px; color: var(--sub); }
@@ -310,7 +313,7 @@ td.when { white-space: nowrap; color: var(--sub); }
    "recovered" marker is never pushed out of view by a long prompt. The flex
    box is an inner wrapper — making the cell itself flex would take it out of
    table layout and collapse the column. */
-td.prompt { max-width: 340px; }
+td.prompt { max-width: 0; width: 55%; }
 td.prompt .prompt-wrap { display: flex; align-items: center; gap: 6px; }
 td.prompt .chip.tag { flex: none; font-size: 10px; }
 td.prompt .prompt-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -428,14 +431,14 @@ td.nowrap { white-space: nowrap; }
   padding: 12px; overflow-x: auto; font-size: 12px; line-height: 1.5; color: var(--text);
 }
 
-.chat { padding: 20px 24px 40px; display: flex; flex-direction: column; gap: 12px; max-width: 860px; }
+.chat { padding: 20px 32px 40px; display: flex; flex-direction: column; gap: 12px; }
 .msg { display: flex; flex-direction: column; gap: 3px; }
 .msg.user { align-items: flex-end; }
 .msg.assistant { align-items: flex-start; }
 .msg-meta { font-size: 11px; color: var(--sub); }
 .msg-body {
   background: var(--surface); border: 1px solid var(--border-soft);
-  border-radius: 10px; padding: 10px 14px; max-width: 640px;
+  border-radius: 10px; padding: 10px 14px; max-width: min(72ch, 100%);
   line-height: 1.5; white-space: pre-wrap;
 }
 .msg.user .msg-body { background: var(--info-bg); }
@@ -595,3 +598,46 @@ td.nowrap { white-space: nowrap; }
   border: 1px solid var(--border-soft); border-radius: 8px;
   padding: 8px 12px; margin-bottom: 12px; line-height: 1.5;
 }
+
+/* ---------- observed memory writes ---------- */
+
+/* Added lines are shown as a diff, since that is the only form in which the
+   claim "the agent wrote this" is actually checkable. */
+.diff { margin: 0; padding: 8px 16px 12px; background: var(--surface2); border-top: 1px solid var(--border-soft); }
+.diff .line {
+  font-family: 'Red Hat Mono', monospace; font-size: 12px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word; color: var(--ok);
+}
+.diff .line::before { content: '+ '; opacity: .55; }
+.diff .rest { font-size: 11.5px; color: var(--sub); margin-top: 6px; }
+
+/* ---------- session page ---------- */
+
+/* A session is a conversation of many runs. Each run is its own block so the
+   one you opened is identifiable, rather than every event in the file being
+   poured into a single list. */
+.session { padding: 8px 32px 40px; display: flex; flex-direction: column; gap: 8px; }
+.run-block { border: 1px solid var(--border-soft); border-radius: 10px; background: var(--surface); overflow: hidden; }
+.run-block.current { border-color: var(--info); box-shadow: 0 0 0 1px var(--info); }
+.run-head {
+  display: flex; align-items: center; gap: 10px; padding: 9px 14px; cursor: pointer;
+}
+.run-head:hover { background: var(--surface2); }
+.run-block.current > .run-head { background: var(--info-bg); }
+.run-head .caret { color: var(--sub); flex: none; width: 12px; }
+.run-head .idx { color: var(--sub); font-size: 11px; font-family: 'Red Hat Mono', monospace; flex: none; }
+.run-head .when { flex: none; }
+.run-head .rp {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-size: 13px;
+}
+.run-head .rmeta { flex: none; font-size: 11.5px; color: var(--sub); font-family: 'Red Hat Mono', monospace; }
+.run-body { border-top: 1px solid var(--border-soft); padding: 4px 6px 10px; }
+.run-prompt {
+  margin: 8px 10px 10px; padding: 10px 12px; border-radius: 8px;
+  background: var(--purple-bg); color: var(--text);
+  font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+}
+.run-facts { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 0 12px 8px; font-size: 12px; color: var(--sub); }
+.run-facts b { color: var(--text); font-weight: 600; }
+.session-head { padding: 16px 32px 10px; border-bottom: 1px solid var(--border-soft); }

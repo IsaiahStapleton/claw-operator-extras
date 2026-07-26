@@ -72,8 +72,14 @@ func TestParseWikiPageReadsDeclaredStructure(t *testing.T) {
 // be listed, or the browser understates what is in the wiki.
 func TestPageWithoutFrontmatterStillListed(t *testing.T) {
 	p := parseWikiPage("workspace/wiki/main/concepts/index.md", []byte("# Concepts\n"), 10, time.Now().UnixMilli())
-	if p.Title != "index" {
-		t.Fatalf("title = %q, want a title derived from the path", p.Title)
+	// Every generated index is called index.md, so naming one after its own
+	// file gives a graph full of nodes labelled "index". It takes the name of
+	// the section it indexes.
+	if p.Title != "Concepts" {
+		t.Fatalf("title = %q, want the section the index belongs to", p.Title)
+	}
+	if root := parseWikiPage("workspace/wiki/main/index.md", nil, 0, 0); root.Title != "Wiki index" {
+		t.Fatalf("root index title = %q", root.Title)
 	}
 	if p.PageType != "" {
 		t.Fatalf("pageType = %q, want empty rather than guessed", p.PageType)
@@ -87,12 +93,11 @@ func TestGraphSeparatesSynthesizedLayerFromSources(t *testing.T) {
 			SourceIDs:     []string{"source.one", "source.missing"}},
 		{ID: "entity.b", PageType: "entity", Title: "B"},
 		{ID: "source.one", PageType: "source", Title: "Bridge import"},
-		{ID: "report.c", PageType: "report", Title: "Open Questions"},
 	}
 	g := buildWikiGraph(pages)
 
-	if len(g.Pages) != 3 {
-		t.Fatalf("synthesized pages = %d, want 3 (concept, entity, report)", len(g.Pages))
+	if len(g.Pages) != 2 {
+		t.Fatalf("synthesized pages = %d, want 2 (concept, entity)", len(g.Pages))
 	}
 	if len(g.Sources) != 1 {
 		t.Fatalf("sources = %d, want 1 held back for expansion", len(g.Sources))
@@ -111,6 +116,46 @@ func TestGraphSeparatesSynthesizedLayerFromSources(t *testing.T) {
 	}
 	if g.Counts["source"] != 1 || g.Counts["concept"] != 1 {
 		t.Fatalf("counts = %v", g.Counts)
+	}
+}
+
+// The graph must show what the wiki knows, not how it is maintained. Reports
+// are generated dashboards that link to nothing, vault plumbing is instructions
+// to the agent, and the quarantine holds superseded copies OpenClaw parks there
+// when it retypes a page — which is why a real vault produced two "Stitch"
+// nodes, one of them an orphan.
+func TestGraphExcludesWikiMachinery(t *testing.T) {
+	pages := []WikiPage{
+		{Path: "workspace/wiki/main/entities/stitch.md", ID: "entity.stitch", PageType: "entity", Title: "Stitch"},
+		{Path: "workspace/wiki/main/.openclaw-wiki/quarantine/retyped-stitch/stitch.synthesis.md",
+			ID: "synthesis.stitch", PageType: "synthesis", Title: "Stitch"},
+		{Path: "workspace/wiki/main/reports/lint.md", ID: "report.lint", PageType: "report", Title: "Lint Report"},
+		{Path: "workspace/wiki/main/reports/index.md", Title: "Reports"},
+		{Path: "workspace/wiki/main/AGENTS.md", Title: "Agent guide"},
+		{Path: "workspace/wiki/main/WIKI.md", Title: "Memory Wiki"},
+		{Path: "workspace/wiki/main/inbox.md", Title: "Inbox"},
+		{Path: "workspace/wiki/main/entities/index.md", Title: "Entities",
+			Links: []string{"workspace/wiki/main/entities/stitch.md"}},
+	}
+	g := buildWikiGraph(pages)
+
+	titles := map[string]int{}
+	for _, p := range g.Pages {
+		titles[p.Title]++
+	}
+	if titles["Stitch"] != 1 {
+		t.Fatalf("Stitch appears %d times; the quarantined copy must not become a second node", titles["Stitch"])
+	}
+	if len(g.Pages) != 2 {
+		t.Fatalf("pages = %+v, want only the entity and its index", g.Pages)
+	}
+	if g.Counts["report"] != 0 {
+		t.Fatalf("counts = %v, want reports excluded entirely", g.Counts)
+	}
+	// The surviving index page still carries its edge, so pruning machinery
+	// does not cost the graph its structure.
+	if len(g.Edges) != 1 || g.Edges[0].To != "entity.stitch" {
+		t.Fatalf("edges = %+v, want the index link to Stitch kept", g.Edges)
 	}
 }
 

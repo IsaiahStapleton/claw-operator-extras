@@ -82,8 +82,48 @@ func extractLinks(pagePath string, body []byte) []string {
 
 // Page types that make up the synthesized layer — what the wiki has actually
 // concluded, as opposed to the raw memory it imported.
+//
+// Reports are excluded deliberately. They are generated dashboards over the
+// wiki (lint results, claim health, stale pages) rather than knowledge, and
+// they link to nothing, so every one of them rendered as an isolated dot.
 var synthesizedTypes = map[string]bool{
-	"concept": true, "entity": true, "synthesis": true, "report": true,
+	"concept": true, "entity": true, "synthesis": true,
+}
+
+// Vault plumbing: instructions to the agent and documentation of the wiki
+// itself. Real files, but not things the wiki knows.
+var plumbingPages = map[string]bool{
+	"AGENTS.md": true, "WIKI.md": true, "inbox.md": true,
+}
+
+// graphExcluded reports whether a page is wiki machinery rather than content.
+//
+// The quarantine directory is the one that matters: OpenClaw parks superseded
+// copies under .openclaw-wiki/quarantine/ when it retypes a page, so a real
+// vault contains both entities/stitch.md and a quarantined stitch.synthesis.md
+// carrying the same title. Both became nodes, and the quarantined one had no
+// edges — which is exactly what a duplicate orphan looks like on screen.
+func graphExcluded(p WikiPage) bool {
+	if p.PageType == "report" {
+		return true
+	}
+	for _, seg := range strings.Split(p.Path, "/") {
+		// .openclaw-wiki holds the quarantine and the machine cache.
+		if strings.HasPrefix(seg, ".") {
+			return true
+		}
+		// reports/index.md carries no pageType, so it needs the path check.
+		if seg == "reports" {
+			return true
+		}
+	}
+	// The index over sources/ links to nothing but sources, and sources are
+	// held back until a node is expanded — so it can only ever render as an
+	// isolated dot with 144 invisible edges.
+	if p.PageType == "" && strings.Contains(p.Path, "/sources/") {
+		return true
+	}
+	return plumbingPages[path.Base(p.Path)]
 }
 
 // WikiRel is a typed edge the page declares to another page.
@@ -198,13 +238,29 @@ func splitFrontmatter(body []byte) ([]byte, bool) {
 	return []byte(rest[:end]), true
 }
 
+// titleFromPath names a page that carries no title of its own. Generated index
+// pages are all called index.md, so naming them by their own filename produced
+// five nodes labelled "index"; they take the name of the section they index
+// instead.
 func titleFromPath(p string) string {
-	base := p
-	if i := strings.LastIndex(base, "/"); i >= 0 {
-		base = base[i+1:]
+	base := strings.TrimSuffix(path.Base(p), ".md")
+	if base == "index" {
+		switch dir := path.Base(path.Dir(p)); dir {
+		case "main", "wiki", ".", "/":
+			return "Wiki index"
+		default:
+			base = dir
+		}
 	}
-	base = strings.TrimSuffix(base, ".md")
-	return strings.ReplaceAll(base, "-", " ")
+	return titleCase(strings.ReplaceAll(base, "-", " "))
+}
+
+func titleCase(s string) string {
+	words := strings.Fields(s)
+	for i, w := range words {
+		words[i] = strings.ToUpper(w[:1]) + w[1:]
+	}
+	return strings.Join(words, " ")
 }
 
 // buildWikiGraph splits pages into the synthesized layer and its sources, and
@@ -217,13 +273,19 @@ func buildWikiGraph(pages []WikiPage) WikiGraph {
 		Edges:   []WikiEdge{},
 		Counts:  map[string]int{},
 	}
-	byID := map[string]WikiPage{}
+	// Machinery is dropped before anything else looks at it, so an excluded
+	// page cannot become a node, an edge target, or a count.
+	kept := make([]WikiPage, 0, len(pages))
+	for _, p := range pages {
+		if !graphExcluded(p) {
+			kept = append(kept, p)
+		}
+	}
+	pages = kept
+
 	for _, p := range pages {
 		if p.PageType != "" {
 			graph.Counts[p.PageType]++
-		}
-		if p.ID != "" {
-			byID[p.ID] = p
 		}
 	}
 
