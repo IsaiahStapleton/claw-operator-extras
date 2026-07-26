@@ -55,6 +55,13 @@ type noteSnapshot struct {
 }
 
 const (
+	// recentOnFirstSight is how far back a note's mtime may be for the first
+	// observation to report it. On a cold start there is no previous content
+	// to diff against, but a recently touched note is still news worth showing
+	// — flagged so the UI does not claim to know what changed. A day covers a
+	// fleet whose consolidation runs on a daily cron, which is the cadence
+	// these notes are actually written at.
+	recentOnFirstSight = 24 * time.Hour
 	// maxWriteEvents bounds the retained history per Claw.
 	maxWriteEvents = 500
 	// maxWatchedBytes bounds the content held for diffing. A Claw's whole
@@ -69,6 +76,10 @@ const (
 func (s *Store) observeNotes(notes []memoryNote, bodies map[string][]byte, now time.Time) []MemoryWriteEvent {
 	if s.watched == nil {
 		s.watched = map[string]noteSnapshot{}
+	}
+	cold := s.watchingSince.IsZero()
+	if cold {
+		s.watchingSince = now
 	}
 	var fresh []MemoryWriteEvent
 
@@ -102,9 +113,17 @@ func (s *Store) observeNotes(notes []memoryNote, bodies map[string][]byte, now t
 		}
 
 		s.watched[n.Path] = noteSnapshot{modTime: n.ModTime, size: n.Size, lines: lines}
-		// A first sighting is bookkeeping, not an observed write; recording it
-		// as one would fill the feed with the whole vault on startup.
 		if seen {
+			fresh = append(fresh, event)
+			continue
+		}
+		// A first sighting of an old note is bookkeeping — reporting it would
+		// announce the whole vault as freshly written. A note touched just
+		// before watching began is different: it is real recent activity, and
+		// worth showing even though its previous content is unknowable.
+		if cold && now.Sub(time.UnixMilli(n.ModTime)) <= recentOnFirstSight {
+			event.AddedLines = nil
+			event.Added = 0
 			fresh = append(fresh, event)
 		}
 	}
@@ -185,6 +204,15 @@ func (s *Store) trimWatched() {
 		}
 		delete(s.watched, a.path)
 	}
+}
+
+// watchingFrom reports when this store began watching, so the UI can say how
+// far back its knowledge goes instead of implying nothing ever happened.
+func (s *Store) watchingFrom() string {
+	if s.watchingSince.IsZero() {
+		return ""
+	}
+	return s.watchingSince.UTC().Format(time.RFC3339Nano)
 }
 
 // recentWrites returns observed writes, newest first.

@@ -589,3 +589,9 @@ td.nowrap { white-space: nowrap; }
   border-top: 1px solid var(--border-soft);
   font-size: 13px; color: var(--link);
 }
+
+.watch-note {
+  font-size: 12px; color: var(--sub); background: var(--surface2);
+  border: 1px solid var(--border-soft); border-radius: 8px;
+  padding: 8px 12px; margin-bottom: 12px; line-height: 1.5;
+}

@@ -338,7 +338,11 @@ func (s *server) handleMemory(w http.ResponseWriter, r *http.Request) {
 		// the lines that appeared. Empty on a cold start: nothing before the
 		// console was running is recoverable.
 		"observed": store.recentWrites(100),
-		"data":     toDataStatus(snap),
+		// How far back the observation goes. Detection is in-memory and per
+		// console process, so a restart resets it; saying so beats an empty
+		// feed that looks like the agents wrote nothing.
+		"watchingSince": store.watchingFrom(),
+		"data":          toDataStatus(snap),
 	})
 }
 

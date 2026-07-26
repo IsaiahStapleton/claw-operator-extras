@@ -26,13 +26,15 @@ func TestObserveNotesReportsWhatWasAppended(t *testing.T) {
 	s := &Store{now: time.Now}
 	now := time.Now()
 
-	notes := []memoryNote{{Path: "workspace/memory/2026-07-26.md", Size: 10, ModTime: now.UnixMilli()}}
+	// Old enough that its first sighting is bookkeeping rather than news.
+	notes := []memoryNote{{Path: "workspace/memory/2026-07-26.md", Size: 10,
+		ModTime: now.Add(-48 * time.Hour).UnixMilli()}}
 	bodies := map[string][]byte{"workspace/memory/2026-07-26.md": []byte("## Notes\n- first entry\n")}
 
-	// The first sighting is bookkeeping, not an observed write: reporting it
+	// A first sighting of an old note is not an observed write: reporting it
 	// would announce the entire vault as freshly written on startup.
 	if got := s.observeNotes(notes, bodies, now); len(got) != 0 {
-		t.Fatalf("first sighting produced %d events, want 0", len(got))
+		t.Fatalf("first sighting of an old note produced %d events, want 0", len(got))
 	}
 
 	later := now.Add(2 * time.Minute)
@@ -89,5 +91,30 @@ func TestDiffLinesCountsRemovals(t *testing.T) {
 	}
 	if removed != 1 {
 		t.Fatalf("removed = %d, want 1 (b is gone)", removed)
+	}
+}
+
+// A note touched just before watching began is real recent activity. It is
+// reported, but without added lines, because the previous content was never
+// seen and inventing a diff would be a lie.
+func TestColdStartReportsRecentlyTouchedNotesWithoutADiff(t *testing.T) {
+	s := &Store{now: time.Now}
+	now := time.Now()
+	path := "workspace/memory/2026-07-26.md"
+	notes := []memoryNote{{Path: path, Size: 10, ModTime: now.Add(-10 * time.Minute).UnixMilli()}}
+	bodies := map[string][]byte{path: []byte("- something\n")}
+
+	events := s.observeNotes(notes, bodies, now)
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want the recent note surfaced on a cold start", len(events))
+	}
+	if !events[0].FirstSeen {
+		t.Fatal("it must be marked first-seen so the UI does not claim to know what changed")
+	}
+	if events[0].Added != 0 || len(events[0].AddedLines) != 0 {
+		t.Fatalf("event = %+v, want no diff claimed for content never previously seen", events[0])
+	}
+	if s.watchingFrom() == "" {
+		t.Fatal("watchingSince should be set so the UI can say how far back it knows")
 	}
 }

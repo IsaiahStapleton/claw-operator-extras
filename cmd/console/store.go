@@ -96,8 +96,9 @@ type Store struct {
 	parsed  map[string]parsedSession // "<agent>/<file>" -> parsed content
 	// watched holds the last content seen per memory note, so a change can be
 	// diffed into an actual write event. writeEvents is the observed history.
-	watched     map[string]noteSnapshot
-	writeEvents []MemoryWriteEvent
+	watched       map[string]noteSnapshot
+	writeEvents   []MemoryWriteEvent
+	watchingSince time.Time
 }
 
 func newStoreFromSource(src sessionSource, cacheTTL time.Duration, excludeAgents []string) *Store {

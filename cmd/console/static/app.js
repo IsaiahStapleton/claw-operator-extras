@@ -108,6 +108,7 @@ const state = {
   runs: [],
   memory: [],
   observed: [],
+  watchingSince: '',
   handoffs: [],
   meta: { ok: true, error: '', badLines: 0, scannedFiles: 0, unreadableFiles: 0 },
   gateway: { status: 'disabled' },
@@ -252,6 +253,7 @@ async function refresh() {
       runs: runs.runs || [],
       memory: memory.writes || [],
       observed: memory.observed || [],
+      watchingSince: memory.watchingSince || '',
       handoffs: handoffs.handoffs || [],
       meta: health.data || state.meta,
       gateway: health.gateway || { status: 'disabled' },
@@ -1025,7 +1027,10 @@ function viewMemoryWrites() {
     const lines = (e.addedLines || []).filter((l) => l.trim());
     return `<div class="card clip" style="margin-bottom:10px">
       <div class="mem-group-head" style="cursor:default">
-        <span class="chip" style="background:var(--ok-bg);color:var(--ok)">+${e.added}</span>
+        ${e.firstSeen
+          ? `<span class="chip" style="background:var(--warn-bg);color:var(--warn)"
+               title="This note changed shortly before the console started watching, so what changed is not known.">touched</span>`
+          : `<span class="chip" style="background:var(--ok-bg);color:var(--ok)">+${e.added}</span>`}
         ${e.removed ? `<span class="chip" style="background:var(--err-bg);color:var(--err)">−${e.removed}</span>` : ''}
         <span class="mem-path">${esc(e.notePath)}</span>
         <span class="grow"></span>
@@ -1042,12 +1047,15 @@ function viewMemoryWrites() {
       <span style="color:var(--sub);font-size:13px">what the agents wrote, and when</span>
     </div>
     <div class="card clip"><div class="tabs">${memoryTabs('writes')}</div></div>
+    ${state.watchingSince ? `<div class="watch-note">Watching since
+      <b title="${esc(exact(state.watchingSince))}">${rel(state.watchingSince, state.now)}</b>.
+      Detection is in-memory, so restarting the console starts this over.</div>` : ''}
     ${rows || `<div class="empty-state"><div class="icon">👁️</div>
-      <h2 class="display">No writes observed yet</h2>
-      <p>OpenClaw records nothing about memory writes, so this console detects them by
-      watching the notes change. It has not seen a change yet — writes that happened before
-      it started watching cannot be recovered. Every note already on disk is under
-      <b>All notes</b>.</p></div>`}
+      <h2 class="display">${state.watchingSince ? 'No changes since watching began' : 'Not watching yet'}</h2>
+      <p>OpenClaw records nothing about memory writes, so this console detects them by watching
+      the notes change${state.watchingSince ? `, which it began ${rel(state.watchingSince, state.now)}` : ''}.
+      Anything written before that cannot be recovered, and the record resets whenever the console
+      restarts. Every note on disk is under <b>All notes</b>.</p></div>`}
   </div>`;
 }
 
