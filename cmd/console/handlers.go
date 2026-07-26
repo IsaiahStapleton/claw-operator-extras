@@ -80,8 +80,79 @@ func buildRunViews(runs []Run, edges []Handoff) []RunView {
 	return views
 }
 
-func (s *server) handleAgents(w http.ResponseWriter, _ *http.Request) {
-	snap := s.store.snapshot()
+/* --------------------------------------------------------- request scope */
+
+// resolveStore turns a request into the store for one Claw, under the
+// logged-in user's identity. In local mode there is one implicit Claw and no
+// cluster; in cluster mode the namespace and claw come from the query string
+// and every downstream call is impersonated.
+func (s *server) resolveStore(r *http.Request) (*Store, error) {
+	if s.localDir != "" {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if st, ok := s.stores["local"]; ok {
+			return st, nil
+		}
+		st := newStoreFromSource(dirSource{root: s.localDir}, s.cacheTTL, s.excluded)
+		s.stores["local"] = st
+		return st, nil
+	}
+
+	identity, err := currentIdentity(r)
+	if err != nil {
+		return nil, apiError{StatusCode: http.StatusUnauthorized, Message: err.Error()}
+	}
+	namespace := r.URL.Query().Get("namespace")
+	claw := r.URL.Query().Get("claw")
+	if err := validateName("namespace", namespace); err != nil {
+		return nil, err
+	}
+	if err := validateName("claw", claw); err != nil {
+		return nil, err
+	}
+
+	pod, err := s.clawPod(r.Context(), identity, namespace, claw)
+	if err != nil {
+		return nil, err
+	}
+	return s.storeFor(identity, namespace, claw, pod), nil
+}
+
+// handleScope lists the Claws this user may read. The UI calls it first to
+// populate its picker; an empty list means the user has access to none.
+func (s *server) handleScope(w http.ResponseWriter, r *http.Request) {
+	if s.localDir != "" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"local": true,
+			"claws": []ClawRef{{Namespace: "local", Name: "local", Ready: true}},
+			"user":  "",
+		})
+		return
+	}
+	identity, err := currentIdentity(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
+	claws, err := s.listClaws(r.Context(), identity)
+	if err != nil {
+		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"local": false,
+		"claws": claws,
+		"user":  identity.Name,
+	})
+}
+
+func (s *server) handleAgents(w http.ResponseWriter, r *http.Request) {
+	store, err := s.resolveStore(r)
+	if err != nil {
+		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
+		return
+	}
+	snap := store.snapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"agents":   s.buildAgentViews(snap, time.Now()),
 		"data":     toDataStatus(snap),
@@ -90,7 +161,12 @@ func (s *server) handleAgents(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *server) handleRuns(w http.ResponseWriter, r *http.Request) {
-	snap := s.store.snapshot()
+	store, err := s.resolveStore(r)
+	if err != nil {
+		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
+		return
+	}
+	snap := store.snapshot()
 	q := r.URL.Query()
 	edges := findHandoffs(snap.Sessions, snap.Agents)
 
@@ -135,7 +211,12 @@ func (s *server) handleRunDetail(w http.ResponseWriter, r *http.Request, agent, 
 	q := r.URL.Query()
 	offset := clampInt(q.Get("offset"), 0, 0, 1<<30)
 	limit := clampInt(q.Get("limit"), 500, 1, 1000)
-	snap := s.store.snapshot()
+	store, err := s.resolveStore(r)
+	if err != nil {
+		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
+		return
+	}
+	snap := store.snapshot()
 	edges := findHandoffs(snap.Sessions, snap.Agents)
 
 	var parent *Handoff
@@ -154,7 +235,7 @@ func (s *server) handleRunDetail(w http.ResponseWriter, r *http.Request, agent, 
 	}
 	run := latestRunOf(snap.Runs, agent, sessionID)
 
-	if detail := s.store.sessionEvents(agent, sessionID, offset, limit); detail != nil {
+	if detail := store.sessionEvents(agent, sessionID, offset, limit); detail != nil {
 		events := make([]map[string]any, 0, len(detail.Events))
 		for _, e := range detail.Events {
 			events = append(events, replayEvent(e))
@@ -168,7 +249,7 @@ func (s *server) handleRunDetail(w http.ResponseWriter, r *http.Request, agent, 
 	}
 
 	// Fall back to plain transcript.
-	if msgs, total, ok := s.store.sessionTranscript(agent, sessionID, offset, limit); ok {
+	if msgs, total, ok := store.sessionTranscript(agent, sessionID, offset, limit); ok {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"agent": agent, "sessionId": sessionID, "total": total,
 			"badLines": 0, "offset": offset, "source": "transcript",
@@ -183,7 +264,12 @@ func (s *server) handleRunDetail(w http.ResponseWriter, r *http.Request, agent, 
 // cheaply poll a running session for new events.
 func (s *server) handleRunTail(w http.ResponseWriter, r *http.Request, agent, sessionID string) {
 	after := clampInt(r.URL.Query().Get("after"), 0, 0, 1<<30)
-	detail := s.store.sessionEvents(agent, sessionID, after, 1000)
+	store, err := s.resolveStore(r)
+	if err != nil {
+		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
+		return
+	}
+	detail := store.sessionEvents(agent, sessionID, after, 1000)
 	if detail == nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
@@ -213,8 +299,13 @@ func replayEvent(e Event) map[string]any {
 	}
 }
 
-func (s *server) handleHandoffs(w http.ResponseWriter, _ *http.Request) {
-	snap := s.store.snapshot()
+func (s *server) handleHandoffs(w http.ResponseWriter, r *http.Request) {
+	store, err := s.resolveStore(r)
+	if err != nil {
+		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
+		return
+	}
+	snap := store.snapshot()
 	edges := findHandoffs(snap.Sessions, snap.Agents)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"handoffs": edges, "data": toDataStatus(snap),
@@ -222,7 +313,12 @@ func (s *server) handleHandoffs(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *server) handleMemory(w http.ResponseWriter, r *http.Request) {
-	snap := s.store.snapshot()
+	store, err := s.resolveStore(r)
+	if err != nil {
+		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
+		return
+	}
+	snap := store.snapshot()
 	writes := extractMemoryWrites(snap.Sessions)
 	limit := clampInt(r.URL.Query().Get("limit"), 50, 1, 500)
 	if limit < len(writes) {
@@ -234,7 +330,12 @@ func (s *server) handleMemory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	snap := s.store.snapshot()
+	store, err := s.resolveStore(r)
+	if err != nil {
+		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
+		return
+	}
+	snap := store.snapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"gateway":      gatewayHealth(r.Context(), s.gatewayURL),
 		"data":         toDataStatus(snap),
@@ -243,8 +344,13 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
-	snap := s.store.snapshot()
+func (s *server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	store, err := s.resolveStore(r)
+	if err != nil {
+		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
+		return
+	}
+	snap := store.snapshot()
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	_, _ = w.Write([]byte(renderMetrics(snap)))
 }

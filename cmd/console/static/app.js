@@ -115,7 +115,27 @@ const state = {
   // replay-scoped
   session: null,
   sessionKey: '',
+  // multi-tenant scope
+  local: false,
+  user: '',
+  claws: [],          // [{namespace, name, ready}]
+  scopeLoaded: false,
+  scopeError: '',
+  namespace: '',
+  claw: '',
 };
+
+// Every data call is scoped to one Claw; the server rejects a request without
+// it, so the query is built in one place.
+function scopeQuery(extra) {
+  const p = new URLSearchParams(extra || {});
+  if (!state.local) {
+    p.set('namespace', state.namespace);
+    p.set('claw', state.claw);
+  }
+  const q = p.toString();
+  return q ? '?' + q : '';
+}
 
 /* ------------------------------------------------------------------ router */
 
@@ -162,14 +182,41 @@ async function getJSON(url) {
   return res.json();
 }
 
+// loadScope discovers which Claws this user may read. It runs once; the
+// picker then drives everything else.
+async function loadScope() {
+  try {
+    const d = await getJSON('api/scope');
+    state.local = !!d.local;
+    state.user = d.user || '';
+    state.claws = d.claws || [];
+    state.scopeError = '';
+    const { q } = route();
+    const wanted = state.claws.find((c) => c.namespace === q.ns && c.name === q.claw);
+    const pick = wanted || state.claws[0];
+    if (pick) {
+      state.namespace = pick.namespace;
+      state.claw = pick.name;
+    }
+  } catch (err) {
+    state.scopeError = String(err.message || err);
+  }
+  state.scopeLoaded = true;
+}
+
 async function refresh() {
+  if (!state.scopeLoaded) await loadScope();
+  if (!state.claws.length) {
+    state.loaded = true;
+    return; // nothing this user can read; the UI says so
+  }
   try {
     const [agents, runs, memory, handoffs, health] = await Promise.all([
-      getJSON('api/agents'),
-      getJSON('api/runs?limit=500'),
-      getJSON('api/memory?limit=200'),
-      getJSON('api/handoffs'),
-      getJSON('api/health'),
+      getJSON('api/agents' + scopeQuery()),
+      getJSON('api/runs' + scopeQuery({ limit: 500 })),
+      getJSON('api/memory' + scopeQuery({ limit: 200 })),
+      getJSON('api/handoffs' + scopeQuery()),
+      getJSON('api/health' + scopeQuery()),
     ]);
     Object.assign(state, {
       agents: agents.agents || [],
@@ -192,7 +239,8 @@ async function refresh() {
 async function loadSession(agent, sessionId) {
   const key = agent + '/' + sessionId;
   try {
-    const d = await getJSON(`api/runs/${encodeURIComponent(agent)}/${encodeURIComponent(sessionId)}?limit=1000`);
+    const d = await getJSON(`api/runs/${encodeURIComponent(agent)}/${encodeURIComponent(sessionId)}` +
+      scopeQuery({ limit: 1000 }));
     state.session = d;
     state.sessionKey = key;
   } catch {
@@ -206,7 +254,8 @@ async function tailSession() {
   if (!s || !isRunningSession(s)) return false;
   try {
     const d = await getJSON(
-      `api/runs/${encodeURIComponent(s.agent)}/${encodeURIComponent(s.sessionId)}/tail?after=${s.events.length}`);
+      `api/runs/${encodeURIComponent(s.agent)}/${encodeURIComponent(s.sessionId)}/tail` +
+      scopeQuery({ after: s.events.length }));
     if (d.events && d.events.length) {
       s.events = s.events.concat(d.events);
       s.total = d.total;
@@ -345,6 +394,7 @@ function renderMasthead() {
         <span class="brand-sub">OpenClaw fleet</span>
       </span>
     </a>
+    ${renderScopePicker()}
     <div class="spacer"></div>
     ${showInteg ? `<button class="integrity-btn" data-act="integrity" title="Data integrity">
       <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
@@ -369,6 +419,22 @@ function renderMasthead() {
         their prompts and token counts are missing at the source, not lost by this console.</div>
     </div>` : ''}
   </header>`;
+}
+
+// The scope picker is the multi-tenant entry point: one console, and this
+// chooses which Claw it is reporting on. The selection is mirrored into the
+// URL so a link keeps pointing at the same Claw.
+function renderScopePicker() {
+  if (state.local || state.claws.length === 0) return '';
+  const opts = state.claws.map((c) => {
+    const v = c.namespace + '/' + c.name;
+    const sel = c.namespace === state.namespace && c.name === state.claw;
+    return `<option value="${esc(v)}"${sel ? ' selected' : ''}>${esc(c.namespace)} / ${esc(c.name)}${c.ready ? '' : ' (not ready)'}</option>`;
+  }).join('');
+  return `<label class="scope" title="Claws you have access to">
+    <span class="scope-label">Claw</span>
+    <select class="scope-select" data-act="scope">${opts}</select>
+  </label>`;
 }
 
 function renderSidebar(r) {
@@ -957,7 +1023,17 @@ function render() {
   }
 
   let main;
-  if (state.backendDown) {
+  if (state.scopeError) {
+    main = `<div class="page"><div class="empty-state"><div class="icon">🔒</div>
+      <h2 class="display">Could not determine your access</h2>
+      <p>${esc(state.scopeError)}</p></div></div>`;
+  } else if (!state.local && state.claws.length === 0) {
+    main = `<div class="page"><div class="empty-state"><div class="icon">🗝️</div>
+      <h2 class="display">No Claws you can read</h2>
+      <p>This console shows the agents of Claws in namespaces you have access to.
+      ${state.user ? `You are signed in as <span class="mono">${esc(state.user)}</span> and no Claw` : 'No Claw'}
+      is currently visible to you. Ask for access to a namespace that runs one, then reload.</p></div></div>`;
+  } else if (state.backendDown) {
     main = `<div class="page"><div class="empty-state"><div class="icon">🔌</div>
       <h2 class="display">Backend unreachable</h2>
       <p>The console could not reach its API. Nothing below is fabricated — the last known data is
@@ -1088,6 +1164,21 @@ function onChange(e) {
   const el = e.target.closest('[data-act]');
   if (!el) return;
   switch (el.dataset.act) {
+    case 'scope': {
+      const [ns, claw] = String(el.value).split('/');
+      if (!ns || !claw) return;
+      state.namespace = ns;
+      state.claw = claw;
+      // A session id only means something within its own Claw.
+      state.session = null;
+      state.sessionKey = '';
+      state.agents = []; state.runs = []; state.memory = []; state.handoffs = [];
+      state.loaded = false;
+      location.hash = '#/?ns=' + encodeURIComponent(ns) + '&claw=' + encodeURIComponent(claw);
+      render();
+      tick();
+      return;
+    }
     case 'filter-agent': return setQ({ agent: el.value });
     case 'filter-range': return setQ({ range: el.value });
     case 'filter-q': return setQ({ q: el.value });

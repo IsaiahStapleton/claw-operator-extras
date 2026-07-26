@@ -81,17 +81,34 @@ func TestScanSkipsExcludedAgents(t *testing.T) {
 	}
 }
 
-func TestScanIgnoresAgentDirWithoutSessions(t *testing.T) {
+// An agent whose sessions this console cannot read still exists. Claws run
+// different agent backends, and some (Codex, for one) store sessions in a
+// layout this console does not parse. Listing the agent with zero runs is
+// truthful; omitting it would imply the agent is not there.
+func TestAgentWithoutReadableSessionsIsStillListed(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "empty-agent"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// A backend layout this console does not index: nested well below
+	// <agent>/sessions/<file>.
+	deep := filepath.Join(root, "codex-agent", "agent", "codex-home", "sessions", "2026", "07", "03")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deep, "rollout-abc.jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	snap := newStore(root, 0, nil).snapshot()
 	if !snap.OK {
-		t.Fatalf("an agent dir without sessions/ is not an error, got %q", snap.Error)
+		t.Fatalf("an agent dir without a readable sessions/ is not an error, got %q", snap.Error)
 	}
-	if len(snap.Agents) != 0 {
-		t.Fatalf("agents = %v, want none", snap.Agents)
+	if len(snap.Agents) != 2 {
+		t.Fatalf("agents = %v, want both listed even with nothing readable", snap.Agents)
+	}
+	if len(snap.Runs) != 0 {
+		t.Fatalf("runs = %d, want 0 — no session was in a format this console reads", len(snap.Runs))
 	}
 }
 

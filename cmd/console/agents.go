@@ -106,7 +106,7 @@ func (s *server) buildAgentViews(snap *Snapshot, now time.Time) []AgentView {
 			switch latest.Outcome {
 			case "running":
 				status = "active"
-				if step := s.currentStep(name, latest); step != "" {
+				if step := lastEventOfRun(snap, name, latest); step != "" {
 					currentStep = &step
 				}
 			case "stale":
@@ -144,16 +144,23 @@ func (s *server) buildAgentViews(snap *Snapshot, now time.Time) []AgentView {
 	return views
 }
 
-// currentStep resolves the last event of the currently-running run, mirroring
-// the Node server's offset-safe lookup for multi-run sessions.
-func (s *server) currentStep(agent string, latest *Run) string {
-	detail := s.store.sessionEvents(agent, latest.SessionID, 0, 1000)
-	if detail == nil {
-		return ""
-	}
-	for i := len(detail.Events) - 1; i >= 0; i-- {
-		if detail.Events[i].RunID == latest.RunID {
-			return eventSummary(detail.Events[i])
+// lastEventOfRun resolves the last event of the currently-running run. It reads
+// the events already in the snapshot rather than fetching the session again:
+// the offset-safe lookup matters because `latest.Steps` counts one run while
+// the session file holds them all, and re-reading would cost a round trip into
+// the pod on every refresh.
+func lastEventOfRun(snap *Snapshot, agent string, latest *Run) string {
+	for _, sess := range snap.Sessions {
+		if sess.Agent != agent || sess.SessionID != latest.SessionID {
+			continue
+		}
+		events := make([]Event, len(sess.Events))
+		copy(events, sess.Events)
+		sortEvents(events)
+		for i := len(events) - 1; i >= 0; i-- {
+			if events[i].RunID == latest.RunID {
+				return eventSummary(events[i])
+			}
 		}
 	}
 	return ""

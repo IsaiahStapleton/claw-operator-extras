@@ -24,34 +24,45 @@ make deployer-build         # build the image; override DEPLOYER_IMG
 
 ## Agent Console
 
-A Red Hat styled console for watching what a Claw's agents are actually doing:
-run timeline with filters, per-agent detail with charts, session replay with
-live tailing, the handoff topology between agents, and the memory-vault writes
-they commit.
+One Red Hat styled console you log into that shows the agents of every Claw in
+namespaces you have access to: run timeline with filters, per-agent detail with
+charts, session replay with live tailing, the handoff topology between agents,
+and the memory-vault writes they commit.
+
+It reads a Claw's session files through the Kubernetes exec API rather than by
+mounting its volume, because Claw home PVCs are ReadWriteOnce and one pod
+cannot mount many of them. Access is enforced by impersonation: the console has
+no standing permission to read any Claw, only to act as the logged-in user, so
+the API server decides what each person sees.
 
 ```sh
 make console-run-local CONSOLE_LOCAL_DATA_DIR=/path/to/agents   # local preview
 make console-build                                              # build; override CONSOLE_IMG
 ```
 
-It expects a directory laid out the way OpenClaw writes one:
+`console-run-local` is a development mode that reads one directory off disk
+instead of talking to a cluster. It expects the layout OpenClaw writes:
 
 ```
 <AGENT_DATA_DIR>/<agent>/sessions/<sessionId>.trajectory.jsonl   # structured events
 <AGENT_DATA_DIR>/<agent>/sessions/<sessionId>.jsonl              # plain transcript
 ```
 
-Inside a Claw pod that is `~/.openclaw/agents`, which is why the deployment
-mounts the Claw home PVC at `/data/agents` with `subPath: .openclaw/agents`.
+Inside a Claw pod that is `~/.openclaw/agents`.
 
-To deploy on OpenShift, see **[config/console/README.md](config/console/README.md)** —
-in particular the ReadWriteOnce constraint, which requires the console to be
-co-scheduled onto the same node as the Claw pod.
+To deploy on OpenShift, see **[config/console/README.md](config/console/README.md)**.
+
+A natural next step is for the OpenClaw gateway to serve its own trajectories
+over HTTP. It already runs in every Claw pod with the files on local disk, so
+an authenticated read API would remove the exec dependency and let the console
+talk plain HTTP. The data path sits behind an interface for exactly that
+reason — swapping it is a contained change, not a rewrite.
 
 ### Design principles
 
 The console is read-only by construction: the server defines only `GET`
-handlers and the data volume is mounted read-only.
+handlers, and the only commands it runs inside a Claw pod are `find`, `tar`,
+and `cat`.
 
 It also refuses to paper over gaps in its input. An unreadable data directory
 produces a danger banner and no figures at all, rather than an empty dashboard
@@ -65,8 +76,12 @@ rendering a bare "unavailable".
 
 All routes are `GET`. `/metrics` is Prometheus text format.
 
+All data routes take `namespace` and `claw` query parameters naming the Claw to
+report on.
+
 | Route | Returns |
 |---|---|
+| `/api/scope` | Claws this user may read |
 | `/api/agents` | Per-agent status, current step, last-seen, run count |
 | `/api/runs` | Run list; filters: `agent`, `outcome`, `q`, `since`, `limit` |
 | `/api/runs/{agent}/{sessionId}` | Session replay; `offset`, `limit` |

@@ -14,10 +14,17 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Agent Console: a read-only observability UI for OpenClaw agents. It scans a
-// directory of trajectory/transcript JSONL files and serves a PatternFly-styled
-// single-page app plus a small JSON API. It never writes to the data mount and
-// exposes only GET routes, so it is safe to run against live agent state.
+// Agent Console: one read-only observability UI for OpenClaw agents across
+// every namespace the logged-in user can reach.
+//
+// Two modes. In cluster mode it discovers Claws through the Kubernetes API and
+// reads their session files by exec'ing into their pods, impersonating the
+// user on every call so the API server decides what they may see. In local
+// mode (AGENT_DATA_DIR set) it reads one directory straight off disk, which is
+// what `make console-run-local` and the tests use.
+//
+// It never writes: only GET routes exist, and every command sent into a pod is
+// a read.
 
 package main
 
@@ -30,6 +37,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -38,26 +46,49 @@ var staticFiles embed.FS
 
 const (
 	defaultListenAddr = ":8080"
-	defaultDataDir    = "/data/agents"
 	defaultCacheMs    = 2000
+	// defaultAgentsDir is where OpenClaw keeps agent state inside a Claw pod.
+	defaultAgentsDir = "/home/node/.openclaw/agents"
+	// defaultContainer is the Claw pod's container that holds that state.
+	defaultContainer = "gateway"
 )
 
 type server struct {
-	store      *Store
-	gatewayURL string
+	// Kubernetes access (cluster mode).
+	apiServer   string
+	client      *http.Client
+	bearerToken string
+	impersonate bool
+	agentsDir   string
+	container   string
+
+	// Local mode: one directory, no cluster.
+	localDir string
+
 	hostname   string
-	dataDir    string
+	gatewayURL string
 	agentMeta  map[string]AgentMeta
+	cacheTTL   time.Duration
+	excluded   []string
 	static     fs.FS
+
+	// Stores are per (user, namespace, claw): the cache must never be shared
+	// across users, or one tenant's snapshot could be served to another.
+	mu     sync.Mutex
+	stores map[string]*Store
 }
 
 func main() {
-	s := newServer()
+	s, err := newServer()
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("GET /api/scope", s.handleScope)
 	mux.HandleFunc("GET /api/agents", s.handleAgents)
 	mux.HandleFunc("GET /api/runs", s.handleRuns)
 	mux.HandleFunc("GET /api/runs/{agent}/{sessionId}", func(w http.ResponseWriter, r *http.Request) {
@@ -73,37 +104,75 @@ func main() {
 	mux.HandleFunc("GET /", s.handleStatic)
 
 	addr := getenv("LISTEN_ADDR", defaultListenAddr)
-	log.Printf("agent console listening on %s (data dir %s)", addr, s.dataDir)
+	if s.localDir != "" {
+		log.Printf("agent console listening on %s (local directory %s)", addr, s.localDir)
+	} else {
+		log.Printf("agent console listening on %s (cluster mode, agents dir %s)", addr, s.agentsDir)
+	}
 	log.Fatal(http.ListenAndServe(addr, mux))
 }
 
-func newServer() *server {
-	dataDir := getenv("AGENT_DATA_DIR", defaultDataDir)
-	cacheMs := getenvInt("CONSOLE_CACHE_MS", defaultCacheMs)
+func newServer() (*server, error) {
+	sub, err := fs.Sub(staticFiles, "static")
+	if err != nil {
+		return nil, err
+	}
+	hostname, _ := os.Hostname()
+
 	var excluded []string
 	if raw := os.Getenv("EXCLUDED_AGENTS"); raw != "" {
 		excluded = strings.Split(raw, ",")
 	}
-	hostname, _ := os.Hostname()
 
-	sub, err := fs.Sub(staticFiles, "static")
-	if err != nil {
-		log.Fatalf("embed static: %v", err)
-	}
-
-	return &server{
-		store:      newStore(dataDir, time.Duration(cacheMs)*time.Millisecond, excluded),
-		gatewayURL: os.Getenv("GATEWAY_URL"),
+	s := &server{
+		localDir:   os.Getenv("AGENT_DATA_DIR"),
+		agentsDir:  getenv("CLAW_AGENTS_DIR", defaultAgentsDir),
+		container:  getenv("CLAW_CONTAINER", defaultContainer),
 		hostname:   hostname,
-		dataDir:    dataDir,
+		gatewayURL: os.Getenv("GATEWAY_URL"),
 		agentMeta:  parseAgentMeta(os.Getenv("AGENT_META")),
+		cacheTTL:   time.Duration(getenvInt("CONSOLE_CACHE_MS", defaultCacheMs)) * time.Millisecond,
+		excluded:   excluded,
 		static:     sub,
+		stores:     map[string]*Store{},
 	}
+	if s.localDir != "" {
+		return s, nil // local mode needs no cluster access
+	}
+
+	if s.apiServer, err = kubeAPIServerURL(); err != nil {
+		return nil, err
+	}
+	if s.client, err = kubeHTTPClient(); err != nil {
+		return nil, err
+	}
+	if s.bearerToken, s.impersonate, err = kubeBearerToken(); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
-// handleStatic serves the embedded SPA. The app uses hash routing, so only the
-// index and its assets are ever requested; unknown non-API paths fall back to
-// index.html to stay robust if that changes.
+// storeFor returns the cached store for one user's view of one Claw. Keying by
+// user as well as by Claw keeps a snapshot built under one identity from ever
+// being served to another.
+func (s *server) storeFor(identity userIdentity, namespace, claw, pod string) *Store {
+	key := identity.Name + "\x00" + namespace + "\x00" + claw + "\x00" + pod
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st, ok := s.stores[key]; ok {
+		return st
+	}
+	src := sessionSource(execSource{
+		srv: s, identity: identity, namespace: namespace,
+		pod: pod, container: s.container, agentsDir: s.agentsDir,
+	})
+	st := newStoreFromSource(src, s.cacheTTL, s.excluded)
+	s.stores[key] = st
+	return st
+}
+
+// handleStatic serves the embedded SPA. The app uses hash routing, so unknown
+// non-API paths fall back to index.html.
 func (s *server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	clean := strings.TrimPrefix(r.URL.Path, "/")
 	if clean == "" {

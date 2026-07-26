@@ -18,30 +18,20 @@ spec:
         app.kubernetes.io/name: agent-console
     spec:
       serviceAccountName: agent-console
-      affinity:
-        # The Claw home PVC is ReadWriteOnce on EBS, so it can only be attached
-        # to one node at a time. Multiple pods MAY share it as long as they are
-        # on that same node, so the console is pinned to wherever the Claw pod
-        # is running. Without this the pod sits Pending on a multi-attach error.
-        # Update the instance label with `kustomize edit` or a patch when
-        # targeting a Claw other than "podling".
-        podAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            - labelSelector:
-                matchLabels:
-                  app: claw
-                  claw.sandbox.redhat.com/instance: podling
-              topologyKey: kubernetes.io/hostname
       containers:
         - name: app
           image: agent-console:latest
           imagePullPolicy: Always
           env:
-            # Agent sessions live at <claw-home>/.openclaw/agents/<agent>/sessions/
-            - name: AGENT_DATA_DIR
-              value: /data/agents
             - name: LISTEN_ADDR
               value: ":8080"
+            # Where agent state lives inside a Claw pod, and which container
+            # holds it. AGENT_DATA_DIR is deliberately unset: setting it would
+            # switch the console into single-directory local mode.
+            - name: CLAW_AGENTS_DIR
+              value: /home/node/.openclaw/agents
+            - name: CLAW_CONTAINER
+              value: gateway
             # Unset by design: the console then reports gateway health as
             # "disabled" rather than pretending to know. Point it at the Claw
             # service to enable the check.
@@ -56,11 +46,6 @@ spec:
           ports:
             - name: http
               containerPort: 8080
-          volumeMounts:
-            - name: claw-home
-              mountPath: /data/agents
-              subPath: .openclaw/agents
-              readOnly: true
           resources:
             requests:
               cpu: 10m
@@ -122,24 +107,11 @@ spec:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
-        # runAsUser is deliberately NOT set. OpenClaw writes sessions as mode
-        # 0600 inside a 0700 directory — a deliberate, audited restriction —
-        # so the console can only read them by running as the SAME UID as the
-        # Claw pod, not merely the same group. Both pods omit runAsUser, so
-        # restricted-v2 assigns each the first UID of the namespace's
-        # openshift.io/sa.scc.uid-range annotation and they match.
-        #
-        # If the Claw is ever pinned to an explicit runAsUser, pin the console
-        # to the same value. Verify with:
-        #   oc exec deploy/agent-console -c app -- id
-        #   oc exec deploy/<claw> -c gateway -- id
-        # A mismatch shows up as a high "unreadable files" count in the
-        # console's integrity badge rather than as a crash.
+        # No UID coupling: the console reads through the Kubernetes exec API
+        # rather than a shared volume, so it runs as whatever UID
+        # restricted-v2 assigns it. The command it runs inside the Claw pod
+        # executes as that pod's own user.
       volumes:
-        - name: claw-home
-          persistentVolumeClaim:
-            claimName: podling-home-pvc
-            readOnly: true
         - name: cookie-secret
           secret:
             secretName: agent-console-cookie
