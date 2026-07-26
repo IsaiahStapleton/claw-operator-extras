@@ -85,10 +85,16 @@ func orDefaultMap(v map[string]any) map[string]any {
 	return v
 }
 
-// makeDataDir writes agents[agent][sessionId] = lines into a temp root.
+// makeDataDir builds a Claw-home-shaped tree and returns its agents dir, so
+// the memory stores that sit beside it (workspace/memory, workspace/wiki) are
+// reachable exactly as they are in a pod.
 func makeDataDir(t *testing.T, agents map[string]map[string][]string) string {
 	t.Helper()
-	root := t.TempDir()
+	home := t.TempDir()
+	root := filepath.Join(home, "agents")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
 	for agent, sessions := range agents {
 		dir := filepath.Join(root, agent, "sessions")
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -127,3 +133,21 @@ func addFile(t *testing.T, root, agent, name, content string, mtime time.Time) s
 }
 
 func iso(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+
+// addNote writes a durable memory note beside the agents dir, mirroring
+// OpenClaw's layout: <claw-home>/workspace/memory/..., wiki, or an agent's own
+// memory directory.
+func addNote(t *testing.T, agentsDir, relPath, content string, mtime time.Time) {
+	t.Helper()
+	home := filepath.Dir(agentsDir)
+	file := filepath.Join(home, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(file, []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.Chtimes(file, mtime, mtime); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+}

@@ -312,17 +312,25 @@ func (s *server) handleHandoffs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleMemory reports the Claw's durable notes as they exist on disk.
+//
+// This deliberately does not derive the feed from tool calls. OpenClaw's
+// consolidation and wiki synthesis write notes directly, without an agent tool
+// call to observe, so a tool-derived feed saw only a fraction of them — 22 of
+// 422 notes on a real Claw. Reading the stores is the only way to answer "what
+// has my fleet committed to memory" truthfully. Where a tool call did record a
+// write, it still supplies the attribution the filesystem cannot.
 func (s *server) handleMemory(w http.ResponseWriter, r *http.Request) {
 	store, err := s.resolveStore(r)
 	if err != nil {
 		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
 		return
 	}
-	snap := store.snapshot()
-	writes := extractMemoryWrites(snap.Sessions)
 	limit := clampInt(r.URL.Query().Get("limit"), 50, 1, 500)
-	if limit < len(writes) {
-		writes = writes[:limit]
+	writes, snap, err := store.memoryFeed(r.Context(), limit)
+	if err != nil {
+		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"writes": writes, "data": toDataStatus(snap),

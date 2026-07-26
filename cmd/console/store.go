@@ -636,3 +636,67 @@ func errCode(err error) string {
 	}
 	return err.Error()
 }
+
+// memoryFeed lists the Claw's durable notes newest first, with content for the
+// page being shown. Attribution comes from tool calls where one recorded the
+// write; notes written by background consolidation have none, and are reported
+// with the agent inferred from their path rather than left out.
+func (s *Store) memoryFeed(ctx context.Context, limit int) ([]MemoryWrite, *Snapshot, error) {
+	snap := s.snapshot()
+
+	notes, err := s.source.memoryNotes(ctx)
+	if err != nil {
+		return nil, snap, err
+	}
+	sort.SliceStable(notes, func(i, j int) bool { return notes[i].ModTime > notes[j].ModTime })
+	if len(notes) > limit {
+		notes = notes[:limit]
+	}
+
+	// Tool calls that did record a write tell us which agent and session made
+	// it; index them by note path so the file listing can be enriched.
+	attribution := map[string]MemoryWrite{}
+	for _, w := range extractMemoryWrites(snap.Sessions) {
+		if _, seen := attribution[w.NotePath]; !seen {
+			attribution[w.NotePath] = w
+		}
+	}
+
+	bodies, _ := s.source.readNotes(ctx, notes)
+
+	out := make([]MemoryWrite, 0, len(notes))
+	for _, n := range notes {
+		entry := MemoryWrite{
+			TS:       time.UnixMilli(n.ModTime).UTC().Format(time.RFC3339Nano),
+			Agent:    agentOfNotePath(n.Path),
+			Tool:     "file",
+			NotePath: n.Path,
+			Content:  clipBytes(string(bodies[n.Path]), 4000),
+		}
+		// Prefer a recorded tool call's agent and session when one exists.
+		for path, w := range attribution {
+			if strings.HasSuffix(n.Path, path) {
+				entry.Agent, entry.SessionID, entry.RunID, entry.Tool = w.Agent, w.SessionID, w.RunID, w.Tool
+				break
+			}
+		}
+		out = append(out, entry)
+	}
+	return out, snap, nil
+}
+
+// agentOfNotePath attributes a note to the agent whose directory holds it.
+// Shared stores under workspace/ belong to no single agent.
+func agentOfNotePath(p string) string {
+	if strings.HasPrefix(p, "workspace/") {
+		return ""
+	}
+	// "<agentsDirName>/<agent>/memory/..." or "<agent>/memory/..."
+	parts := strings.Split(p, "/")
+	for i, seg := range parts {
+		if seg == "memory" && i > 0 {
+			return parts[i-1]
+		}
+	}
+	return ""
+}

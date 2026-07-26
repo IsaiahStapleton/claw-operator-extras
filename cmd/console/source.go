@@ -27,7 +27,9 @@ import (
 	"context"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -35,6 +37,50 @@ import (
 // maxSessionFileBytes caps any single session file pulled in a batch, so one
 // pathological file cannot exhaust the console.
 const maxSessionFileBytes = 256 << 20
+
+// maxNoteBytes caps one memory note; notes are prose, not logs.
+const maxNoteBytes = 4 << 20
+
+// safeNotePathRE guards paths interpolated into a tar argument. Notes live in
+// nested directories, so slashes are allowed but traversal is not.
+var safeNotePathRE = regexp.MustCompile(`^[\w.-]+(?:/[\w.-]+)*$`)
+
+// parseNoteIndex turns absolute find output into home-relative notes.
+func parseNoteIndex(out, home string) []memoryNote {
+	var notes []memoryNote
+	prefix := strings.TrimSuffix(home, "/") + "/"
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		if len(parts) != 3 {
+			continue
+		}
+		rel := strings.TrimPrefix(parts[0], prefix)
+		if rel == parts[0] || strings.Contains(rel, "..") {
+			continue
+		}
+		size, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		secs, frac, _ := strings.Cut(parts[2], ".")
+		sec, err := strconv.ParseInt(secs, 10, 64)
+		if err != nil {
+			continue
+		}
+		ms := sec * 1000
+		if len(frac) >= 3 {
+			if f, err := strconv.ParseInt(frac[:3], 10, 64); err == nil {
+				ms += f
+			}
+		}
+		notes = append(notes, memoryNote{Path: rel, Size: size, ModTime: ms})
+	}
+	return notes
+}
 
 // sessionFile is one file in an agent's sessions directory. Size and ModTime
 // let the store skip re-reading append-only files it already parsed, which
@@ -60,8 +106,23 @@ type sessionSource interface {
 	// scan is dominated by round trips, not bytes. Files that cannot be read
 	// are omitted rather than failing the batch.
 	readMany(ctx context.Context, files []sessionFile) (map[string][]byte, error)
+	// memoryNotes lists the Claw's durable memory notes with their sizes and
+	// modification times. These are read from disk rather than inferred from
+	// tool calls: OpenClaw's consolidation and wiki synthesis write notes
+	// directly, so a tool-call-derived feed sees only a fraction of them.
+	memoryNotes(ctx context.Context) ([]memoryNote, error)
+	// readNotes fetches note contents by their index paths.
+	readNotes(ctx context.Context, notes []memoryNote) (map[string][]byte, error)
 	// describe names the source for logs and error messages.
 	describe() string
+}
+
+// memoryNote is one durable note on disk. Path is relative to the Claw home,
+// e.g. "workspace/memory/2026-07-26.md" or "stitch/memory/dreaming/deep/x.md".
+type memoryNote struct {
+	Path    string
+	Size    int64
+	ModTime int64 // unix millis
 }
 
 // batchKey identifies a file within a readMany result.
@@ -113,6 +174,59 @@ func (d dirSource) readMany(ctx context.Context, files []sessionFile) (map[strin
 	for _, f := range files {
 		if body, err := d.read(ctx, f.Agent, f.Name); err == nil {
 			out[batchKey(f.Agent, f.Name)] = body
+		}
+	}
+	return out, nil
+}
+
+// memoryNotes on a local directory looks beside the agents dir, matching the
+// layout in a Claw pod.
+func (d dirSource) memoryNotes(_ context.Context) ([]memoryNote, error) {
+	home := filepath.Dir(strings.TrimSuffix(d.root, string(filepath.Separator)))
+	var out []memoryNote
+	for _, sub := range []string{"workspace/memory", "workspace/wiki"} {
+		out = append(out, walkNotes(home, sub)...)
+	}
+	if agents, err := os.ReadDir(d.root); err == nil {
+		for _, a := range agents {
+			if a.IsDir() {
+				out = append(out, walkNotes(home, filepath.Base(d.root)+"/"+a.Name()+"/memory")...)
+			}
+		}
+	}
+	return out, nil
+}
+
+func walkNotes(home, sub string) []memoryNote {
+	var out []memoryNote
+	root := filepath.Join(home, sub)
+	_ = filepath.WalkDir(root, func(p string, e os.DirEntry, err error) error {
+		if err != nil || e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			return nil
+		}
+		info, err := e.Info()
+		if err != nil {
+			return nil
+		}
+		rel, err := filepath.Rel(home, p)
+		if err != nil {
+			return nil
+		}
+		out = append(out, memoryNote{Path: filepath.ToSlash(rel), Size: info.Size(), ModTime: info.ModTime().UnixMilli()})
+		return nil
+	})
+	return out
+}
+
+func (d dirSource) readNotes(_ context.Context, notes []memoryNote) (map[string][]byte, error) {
+	home := filepath.Dir(strings.TrimSuffix(d.root, string(filepath.Separator)))
+	out := map[string][]byte{}
+	for _, n := range notes {
+		if !safeNotePathRE.MatchString(n.Path) {
+			continue
+		}
+		if body, err := os.ReadFile(filepath.Join(home, filepath.FromSlash(n.Path))); err == nil {
+			out[n.Path] = body
 		}
 	}
 	return out, nil
@@ -228,6 +342,65 @@ func (e execSource) readMany(ctx context.Context, files []sessionFile) (map[stri
 		return out, err
 	}
 	return out, nil
+}
+
+// memoryNotes lists notes across all three of OpenClaw's stores in one round
+// trip: the shared workspace memory, the wiki, and each agent's own
+// consolidation output.
+func (e execSource) memoryNotes(ctx context.Context) ([]memoryNote, error) {
+	home := shellQuote(e.clawHome())
+	script := "find " + home + "/workspace/memory " + home + "/workspace/wiki " +
+		home + "/*/memory -name '*.md' -type f -printf '%p\t%s\t%T@\n' 2>/dev/null; true"
+
+	res, err := e.srv.execInPod(ctx, e.identity, e.namespace, e.pod, e.container,
+		[]string{"sh", "-c", script})
+	if err != nil {
+		return nil, err
+	}
+	return parseNoteIndex(string(res.Stdout), e.clawHome()), nil
+}
+
+func (e execSource) readNotes(ctx context.Context, notes []memoryNote) (map[string][]byte, error) {
+	out := map[string][]byte{}
+	if len(notes) == 0 {
+		return out, nil
+	}
+	args := []string{"tar", "cf", "-", "-C", e.clawHome()}
+	wanted := map[string]bool{}
+	for _, n := range notes {
+		if !safeNotePathRE.MatchString(n.Path) {
+			continue
+		}
+		args = append(args, n.Path)
+		wanted[n.Path] = true
+	}
+	if len(wanted) == 0 {
+		return out, nil
+	}
+	err := e.srv.execStream(ctx, e.identity, e.namespace, e.pod, e.container, args,
+		func(r io.Reader) error {
+			tr := tar.NewReader(r)
+			for {
+				hdr, err := tr.Next()
+				if err != nil {
+					return nil
+				}
+				if hdr.Typeflag != tar.TypeReg || !wanted[hdr.Name] {
+					continue
+				}
+				body, err := io.ReadAll(io.LimitReader(tr, maxNoteBytes))
+				if err != nil {
+					continue
+				}
+				out[hdr.Name] = body
+			}
+		})
+	return out, err
+}
+
+// clawHome is the OpenClaw home directory: the agents dir's parent.
+func (e execSource) clawHome() string {
+	return strings.TrimSuffix(path.Dir(e.agentsDir), "/")
 }
 
 func (e execSource) read(ctx context.Context, agent, name string) ([]byte, error) {

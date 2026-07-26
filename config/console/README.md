@@ -95,11 +95,16 @@ them:
 - `workspace/wiki/main/**` — the memory wiki (concepts, entities, syntheses)
 - `<agent>/memory/dreaming/{deep,light}/*.md` — per-agent consolidation
 
-A write is a `tool.call` that touches one of those paths, or a call to a native
-mutating memory tool (`memory_store`, `memory_forget`) which changes the store
-without naming a file. Reads — `memory_search`, `memory_get`, `wiki_get`, a
-`cat` — are deliberately excluded, as are edits made by a human rather than an
-agent, which leave no tool call to observe.
+The feed lists these **as they exist on disk**, newest first. It is not derived
+from tool calls, and that distinction matters: OpenClaw's consolidation and
+wiki synthesis write notes directly, with no agent tool call to observe. On a
+real Claw a tool-derived feed found 22 notes where the stores held 422 — it
+missed every consolidation run and the entire wiki.
+
+Tool calls are still read, but only for attribution: where one recorded a
+write, it supplies the agent and session behind a note. Notes with no tool call
+are attributed to the agent whose directory holds them, and notes under
+`workspace/` belong to no single agent.
 
 ## A note on agent backends
 
