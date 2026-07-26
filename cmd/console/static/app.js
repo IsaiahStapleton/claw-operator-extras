@@ -120,6 +120,7 @@ const state = {
   local: false,
   user: '',
   claws: [],          // [{namespace, name, ready}]
+  userMenuOpen: false,
   scopeLoaded: false,
   scopeError: '',
   namespace: '',
@@ -435,6 +436,7 @@ function renderMasthead() {
     ${refreshed}
     <button class="icon-btn" data-act="theme" title="Toggle light/dark">${state.theme === 'light' ? '☾' : '☀'}</button>
     <span class="masthead-host">${esc(state.hostname)}</span>
+    ${renderUserMenu()}
     ${state.integrityOpen ? `<div class="popover">
       <h3 class="display">Data integrity</h3>
       <div class="popover-grid">
@@ -464,6 +466,23 @@ function renderScopePicker() {
     <span class="scope-label">Claw</span>
     <select class="scope-select" data-act="scope">${opts}</select>
   </label>`;
+}
+
+// Identity and sign-out. The oauth-proxy sidecar owns the session, so signing
+// out means hitting its endpoint rather than clearing anything here. In local
+// mode there is no proxy and no session, so nothing is shown.
+function renderUserMenu() {
+  if (state.local || !state.user) return '';
+  const initials = state.user.replace(/@.*$/, '').split(/[.\-_ ]/)
+    .filter(Boolean).slice(0, 2).map((s) => s[0].toUpperCase()).join('') || '?';
+  return `<div class="usermenu">
+    <button class="avatar" data-act="user-menu" title="${esc(state.user)}">${esc(initials)}</button>
+    ${state.userMenuOpen ? `<div class="usermenu-pop">
+      <div class="usermenu-name">${esc(state.user)}</div>
+      <div class="usermenu-sub">Signed in through OpenShift</div>
+      <a class="usermenu-out" href="/oauth/sign_out">Sign out</a>
+    </div>` : ''}
+  </div>`;
 }
 
 function renderSidebar(r) {
@@ -1553,12 +1572,25 @@ function scrollToBottom() {
 
 function onClick(e) {
   const el = e.target.closest('[data-act]');
-  if (!el) return;
+  if (!el) {
+    // A click outside dismisses whatever popover is open.
+    if ((state.userMenuOpen || state.integrityOpen) && !e.target.closest('.usermenu-pop, .popover')) {
+      state.userMenuOpen = false;
+      state.integrityOpen = false;
+      render();
+    }
+    return;
+  }
   const act = el.dataset.act;
 
   switch (act) {
     case 'integrity':
       state.integrityOpen = !state.integrityOpen;
+      state.userMenuOpen = false;
+      return render();
+    case 'user-menu':
+      state.userMenuOpen = !state.userMenuOpen;
+      state.integrityOpen = false;
       return render();
     case 'theme': {
       const t = state.theme === 'light' ? 'dark' : 'light';
