@@ -123,6 +123,11 @@ const state = {
   scopeError: '',
   namespace: '',
   claw: '',
+  // memory wiki
+  wiki: null,          // {pages, sources, edges, counts}
+  wikiExpanded: {},    // page id -> sources revealed
+  wikiPage: null,      // {page, content} being read
+  wikiLoading: false,
 };
 
 // Every data call is scoped to one Claw; the server rejects a request without
@@ -162,6 +167,27 @@ function setQ(patch) {
   location.hash = '#/' + seg.join('/') + (qs ? '?' + qs : '');
 }
 
+async function loadWiki() {
+  if (state.wiki || state.wikiLoading) return;
+  state.wikiLoading = true;
+  try {
+    state.wiki = await getJSON('api/wiki' + scopeQuery());
+  } catch (err) {
+    state.wiki = { pages: [], sources: {}, edges: [], counts: {}, error: String(err.message || err) };
+  }
+  state.wikiLoading = false;
+  render();
+}
+
+async function openWikiPage(path) {
+  try {
+    state.wikiPage = await getJSON('api/wiki/page' + scopeQuery({ path }));
+  } catch (err) {
+    state.wikiPage = { page: { path, title: path }, content: '', error: String(err.message || err) };
+  }
+  render();
+}
+
 function route() {
   const { seg, q } = parseHash();
   const isReplay = seg[0] === 'agents' && seg[2] === 'sessions' && !!seg[3];
@@ -170,7 +196,8 @@ function route() {
     seg, q, isReplay, isAgent,
     isTopology: seg[0] === 'topology',
     isMemory: seg[0] === 'memory',
-    isOverview: !isReplay && !isAgent && seg[0] !== 'topology' && seg[0] !== 'memory',
+    isWiki: seg[0] === 'wiki',
+    isOverview: !isReplay && !isAgent && !['topology', 'memory', 'wiki'].includes(seg[0]),
   };
 }
 
@@ -442,6 +469,7 @@ function renderSidebar(r) {
     ['Overview', '#/', r.isOverview],
     ['Topology', '#/topology', r.isTopology],
     ['Memory', '#/memory', r.isMemory],
+    ['Wiki', '#/wiki', r.isWiki],
   ].map(([label, href, active]) =>
     `<a class="nav-item${active ? ' active' : ''}" href="${href}">${label}</a>`).join('');
 
@@ -1011,6 +1039,181 @@ function viewMemory() {
   </div>`;
 }
 
+
+/* -------------------------------------------------------------- wiki view */
+
+const WIKI_TYPES = {
+  concept:   { color: 'var(--purple)', bg: 'var(--purple-bg)', label: 'Concept' },
+  entity:    { color: 'var(--teal)',   bg: 'var(--teal-bg)',   label: 'Entity' },
+  synthesis: { color: 'var(--info)',   bg: 'var(--info-bg)',   label: 'Synthesis' },
+  report:    { color: 'var(--warn)',   bg: 'var(--warn-bg)',   label: 'Report' },
+  source:    { color: 'var(--sub)',    bg: 'var(--surface2)',  label: 'Source' },
+};
+const wikiType = (t) => WIKI_TYPES[t] || { color: 'var(--sub)', bg: 'var(--surface2)', label: t || 'Page' };
+
+// Nodes sit on a circle: with a synthesized layer this small, a ring is
+// readable and stable, where a force layout would jitter between refreshes.
+// Expanded sources orbit their parent rather than joining the ring.
+function wikiLayout(pages, expanded, sources) {
+  // Wide and short, with the ring pulled in: labels are placed outside the
+  // circle, so the radius has to leave room for them rather than for the nodes.
+  const W = 900, H = 520, cx = W / 2, cy = H / 2;
+  const R = Math.min(cx, cy) - 46;
+  const pos = {};
+  pages.forEach((p, i) => {
+    const a = (i / Math.max(1, pages.length)) * Math.PI * 2 - Math.PI / 2;
+    pos[p.id] = { x: cx + R * Math.cos(a), y: cy + R * Math.sin(a), angle: a };
+  });
+  const satellites = [];
+  pages.forEach((p) => {
+    if (!expanded[p.id]) return;
+    const ids = (p.sourceIds || []).filter((id) => sources[id]);
+    const base = pos[p.id];
+    ids.forEach((id, k) => {
+      const spread = 0.55;
+      const a = base.angle + (k - (ids.length - 1) / 2) * (spread / Math.max(1, ids.length));
+      satellites.push({ id, from: p.id, x: base.x + 74 * Math.cos(a), y: base.y + 74 * Math.sin(a) });
+    });
+  });
+  return { W, H, pos, satellites };
+}
+
+// Labels sit outside the ring and read outward, anchored by which side of the
+// circle they are on. Centering them under each node collides once there are
+// more than a handful of pages.
+function wikiLabel(p, n) {
+  const cos = Math.cos(n.angle), sin = Math.sin(n.angle);
+  const lx = n.x + 26 * cos, ly = n.y + 26 * sin + 4;
+  const anchor = cos > 0.15 ? 'start' : cos < -0.15 ? 'end' : 'middle';
+  const dy = anchor === 'middle' ? (sin > 0 ? 12 : -6) : 0;
+  return `<text x="${lx.toFixed(1)}" y="${(ly + dy).toFixed(1)}" text-anchor="${anchor}"
+    font-size="11" fill="var(--text)" style="pointer-events:none">${esc((p.title || p.id).slice(0, 26))}</text>`;
+}
+
+function viewWiki() {
+  if (!state.wiki) {
+    loadWiki();
+    return `<div class="page narrow"><h1>Memory wiki</h1><div class="loading">Reading the wiki…</div></div>`;
+  }
+  const w = state.wiki;
+  if (w.error) {
+    return `<div class="page narrow"><h1>Memory wiki</h1><div class="empty-state"><div class="icon">📚</div>
+      <h2 class="display">Could not read the wiki</h2><p>${esc(w.error)}</p></div></div>`;
+  }
+  const pages = w.pages || [];
+  if (!pages.length) {
+    return `<div class="page narrow"><h1>Memory wiki</h1><div class="empty-state"><div class="icon">📚</div>
+      <h2 class="display">Nothing synthesized yet</h2>
+      <p>This wiki holds ${w.counts.source || 0} imported sources but no concepts, entities, or syntheses.
+      Wiki synthesis runs only when an agent is asked to organize what it knows.</p></div></div>`;
+  }
+
+  const { W, H, pos, satellites } = wikiLayout(pages, state.wikiExpanded, w.sources || {});
+  const byId = {};
+  pages.forEach((p) => { byId[p.id] = p; });
+
+  // Relationship edges only; provenance is drawn to the satellites instead.
+  const rel = (w.edges || []).filter((e) => e.kind !== 'source' && pos[e.from] && pos[e.to]);
+  const edgeSvg = rel.map((e) => {
+    const a = pos[e.from], b = pos[e.to];
+    return `<g><path d="M${a.x.toFixed(1)} ${a.y.toFixed(1)} L${b.x.toFixed(1)} ${b.y.toFixed(1)}"
+      stroke="var(--border)" stroke-width="${(1 + (e.weight || 0) * 1.5).toFixed(1)}" fill="none"
+      marker-end="url(#wikiArrow)"></path></g>`;
+  }).join('');
+
+  const satSvg = satellites.map((sat) => {
+    const base = pos[sat.from];
+    return `<g><line x1="${base.x.toFixed(1)}" y1="${base.y.toFixed(1)}" x2="${sat.x.toFixed(1)}" y2="${sat.y.toFixed(1)}"
+        stroke="var(--border-soft)" stroke-width="1" stroke-dasharray="3 2"></line>
+      <circle cx="${sat.x.toFixed(1)}" cy="${sat.y.toFixed(1)}" r="5" fill="var(--surface2)" stroke="var(--sub)" stroke-width="1.5"></circle></g>`;
+  }).join('');
+
+  const nodeSvg = pages.map((p) => {
+    const t = wikiType(p.pageType);
+    const n = pos[p.id];
+    const nSrc = (p.sourceIds || []).filter((id) => (w.sources || {})[id]).length;
+    const open = !!state.wikiExpanded[p.id];
+    return `<g data-act="wiki-node" data-id="${esc(p.id)}" data-path="${esc(p.path)}" style="cursor:pointer">
+      <circle cx="${n.x.toFixed(1)}" cy="${n.y.toFixed(1)}" r="${open ? 20 : 16}"
+        fill="${t.bg}" stroke="${t.color}" stroke-width="2.5"></circle>
+      ${nSrc ? `<text x="${n.x.toFixed(1)}" y="${(n.y + 4).toFixed(1)}" text-anchor="middle"
+        font-size="10" fill="${t.color}" style="pointer-events:none">${nSrc}</text>` : ''}
+      ${wikiLabel(p, n)}
+    </g>`;
+  }).join('');
+
+  const legend = Object.keys(WIKI_TYPES).filter((k) => k !== 'source' && w.counts[k]).map((k) =>
+    `<span><span class="swatch" style="background:${WIKI_TYPES[k].color}"></span>${WIKI_TYPES[k].label} <b>${w.counts[k]}</b></span>`).join('');
+
+  const list = pages.map((p) => {
+    const t = wikiType(p.pageType);
+    const when = p.lastRefreshedAt || p.modifiedAt;
+    return `<div class="row" data-act="wiki-open" data-path="${esc(p.path)}" style="cursor:pointer">
+      <span class="chip" style="background:${t.bg};color:${t.color}">${t.label}</span>
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.title || p.id)}</span>
+      ${(p.claims || []).length ? `<span class="mem-count">${p.claims.length} claims</span>` : ''}
+      <span class="when" title="${esc(exact(when))}">${rel2(when)}</span>
+    </div>`;
+  }).join('');
+
+  return `<div class="page narrow">
+    <div class="page-head">
+      <h1>Memory wiki</h1>
+      <span style="color:var(--sub);font-size:13px">what this fleet has concluded, and what it drew on</span>
+      <span class="spacer"></span>
+      <span class="result-count">${pages.length} synthesized · ${Object.keys(w.sources || {}).length} sources</span>
+    </div>
+    <div class="card" style="padding:8px">
+      <div style="position:relative;width:100%;aspect-ratio:${W}/${H}">
+        <svg viewBox="0 0 ${W} ${H}" style="position:absolute;inset:0;width:100%;height:100%;display:block">
+          <defs><marker id="wikiArrow" viewBox="0 0 10 10" refX="22" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 Z" fill="var(--sub)"></path></marker></defs>
+          ${edgeSvg}${satSvg}${nodeSvg}
+        </svg>
+      </div>
+      <div class="legend" style="flex-direction:row;gap:14px;padding:8px 6px 2px;flex-wrap:wrap">
+        ${legend}<span style="color:var(--sub)">click a node to reveal its sources · click a row to read</span>
+      </div>
+    </div>
+    ${state.wikiPage ? renderWikiReader() : ''}
+    <div class="card clip">
+      <div class="section-head">Pages</div>
+      ${list}
+    </div>
+  </div>`;
+}
+
+// rel2 tolerates the wiki's own ISO timestamps as well as file mtimes.
+const rel2 = (ts) => rel(ts, state.now);
+
+function renderWikiReader() {
+  const { page, content, error } = state.wikiPage;
+  const t = wikiType(page.pageType);
+  const claims = (page.claims || []).map((c) => `<li style="margin-bottom:6px">
+      ${esc(c.text || c.id || '')}
+      ${c.status ? `<span class="chip" style="background:var(--surface2);color:var(--sub);margin-left:6px">${esc(c.status)}</span>` : ''}
+      ${c.confidence ? `<span class="chip" style="background:var(--info-bg);color:var(--info)">${(c.confidence * 100).toFixed(0)}%</span>` : ''}
+    </li>`).join('');
+
+  return `<div class="card clip">
+    <div class="section-head" style="display:flex;align-items:center;gap:10px">
+      <span class="chip" style="background:${t.bg};color:${t.color}">${t.label}</span>
+      <span>${esc(page.title || page.path)}</span>
+      <span class="spacer"></span>
+      <span class="when" title="${esc(exact(page.lastRefreshedAt || page.modifiedAt))}">${rel2(page.lastRefreshedAt || page.modifiedAt)}</span>
+      <button class="link-btn" data-act="wiki-close">close</button>
+    </div>
+    ${error ? `<div class="empty">${esc(error)}</div>` : `
+      <div style="padding:12px 16px">
+        <div style="font-size:12px;color:var(--sub);margin-bottom:8px" class="mono">${esc(page.path)}</div>
+        ${claims ? `<div style="font-weight:600;font-size:13px;margin-bottom:6px">Claims</div><ul style="margin:0 0 12px;padding-left:18px;font-size:13px">${claims}</ul>` : ''}
+        <details><summary style="cursor:pointer;color:var(--link);font-size:13px">Full page source</summary>
+          <pre class="mono" style="white-space:pre-wrap;font-size:12px;line-height:1.5;background:var(--surface2);border:1px solid var(--border-soft);border-radius:8px;padding:10px 12px;margin-top:8px">${esc(content || '')}</pre>
+        </details>
+      </div>`}
+  </div>`;
+}
+
 /* ----------------------------------------------------------------- render */
 
 function render() {
@@ -1057,6 +1260,8 @@ function render() {
     main = viewTopology();
   } else if (r.isMemory) {
     main = viewMemory();
+  } else if (r.isWiki) {
+    main = viewWiki();
   } else {
     main = viewOverview();
   }
@@ -1146,6 +1351,16 @@ function onClick(e) {
       state.showResume = false;
       render();
       return scrollToBottom();
+    case 'wiki-node': {
+      const id = el.dataset.id;
+      state.wikiExpanded[id] = !state.wikiExpanded[id];
+      return render();
+    }
+    case 'wiki-open':
+      return openWikiPage(el.dataset.path);
+    case 'wiki-close':
+      state.wikiPage = null;
+      return render();
     case 'topo-range':
       state.topoRange = el.dataset.range;
       state.selEdge = null;
@@ -1173,6 +1388,7 @@ function onChange(e) {
       state.session = null;
       state.sessionKey = '';
       state.agents = []; state.runs = []; state.memory = []; state.handoffs = [];
+      state.wiki = null; state.wikiPage = null; state.wikiExpanded = {};
       state.loaded = false;
       location.hash = '#/?ns=' + encodeURIComponent(ns) + '&claw=' + encodeURIComponent(claw);
       render();

@@ -700,3 +700,27 @@ func agentOfNotePath(p string) string {
 	}
 	return ""
 }
+
+// wikiPages reads every wiki page with its frontmatter. Pages are fetched in
+// one batch, the same way sessions are, because each read is a round trip.
+func (s *Store) wikiPages(ctx context.Context) ([]WikiPage, error) {
+	notes, err := s.source.memoryNotes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var wiki []memoryNote
+	for _, n := range notes {
+		if strings.Contains(n.Path, "/wiki/") {
+			wiki = append(wiki, n)
+		}
+	}
+	bodies, err := s.source.readNotes(ctx, wiki)
+	if err != nil && len(bodies) == 0 {
+		return nil, err
+	}
+	pages := make([]WikiPage, 0, len(wiki))
+	for _, n := range wiki {
+		pages = append(pages, parseWikiPage(n.Path, bodies[n.Path], n.Size, n.ModTime))
+	}
+	return pages, nil
+}

@@ -337,6 +337,57 @@ func (s *server) handleMemory(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleWiki returns the memory wiki's synthesized layer as a graph, with its
+// sources alongside for expansion rather than mixed into the nodes.
+func (s *server) handleWiki(w http.ResponseWriter, r *http.Request) {
+	store, err := s.resolveStore(r)
+	if err != nil {
+		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
+		return
+	}
+	pages, err := store.wikiPages(r.Context())
+	if err != nil {
+		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
+		return
+	}
+	graph := buildWikiGraph(pages)
+	writeJSON(w, http.StatusOK, graph)
+}
+
+// handleWikiPage returns one page in full, for reading.
+func (s *server) handleWikiPage(w http.ResponseWriter, r *http.Request) {
+	store, err := s.resolveStore(r)
+	if err != nil {
+		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
+		return
+	}
+	path := r.URL.Query().Get("path")
+	if path == "" || !strings.Contains(path, "/wiki/") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a wiki page path is required"})
+		return
+	}
+	notes, err := store.source.memoryNotes(r.Context())
+	if err != nil {
+		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
+		return
+	}
+	for _, n := range notes {
+		if n.Path != path {
+			continue
+		}
+		bodies, err := store.source.readNotes(r.Context(), []memoryNote{n})
+		if err != nil {
+			writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
+			return
+		}
+		body := bodies[n.Path]
+		page := parseWikiPage(n.Path, body, n.Size, n.ModTime)
+		writeJSON(w, http.StatusOK, map[string]any{"page": page, "content": string(body)})
+		return
+	}
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "wiki page not found"})
+}
+
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	store, err := s.resolveStore(r)
 	if err != nil {
