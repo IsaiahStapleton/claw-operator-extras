@@ -105,9 +105,11 @@ select, input, button { font-family: inherit; font-size: inherit; }
 .masthead a:hover { text-decoration: none; color: #fff; }
 
 .brand { display: flex; align-items: center; gap: 10px; }
+/* Same mark and size as the deployer's masthead, so the two surfaces read as
+   one product rather than two that happen to share a cluster. */
+.brand-logo { flex: 0 0 auto; width: 30px; height: 30px; }
 .brand-text { display: flex; flex-direction: column; line-height: 1.05; }
 .brand-title { font-family: 'Red Hat Display', Helvetica, Arial, sans-serif; font-weight: 700; font-size: 16px; }
-.brand-sub { font-size: 11px; color: #8a8d90; }
 
 .spacer { flex: 1; }
 

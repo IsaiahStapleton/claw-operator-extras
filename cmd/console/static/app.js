@@ -446,15 +446,9 @@ function renderMasthead() {
 
   return `<header class="masthead">
     <a class="brand" href="#/">
-      <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
-        <rect width="28" height="28" rx="6" fill="var(--brand-red)"></rect>
-        <path d="M8 20 Q10 9 14 7 Q12 13 12 20 Z" fill="#fff"></path>
-        <path d="M13.5 20 Q15.5 10 19 8.5 Q17 14 16.5 20 Z" fill="#fff" opacity="0.85"></path>
-        <path d="M18.5 20 Q20.5 13 23 12 Q21 16 20.5 20 Z" fill="#fff" opacity="0.7"></path>
-      </svg>
+      <img class="brand-logo" src="openclaw.svg" alt="" aria-hidden="true">
       <span class="brand-text">
         <span class="brand-title">Agent Console</span>
-        <span class="brand-sub">OpenClaw fleet</span>
       </span>
     </a>
     ${renderScopePicker()}
