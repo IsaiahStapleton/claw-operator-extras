@@ -120,7 +120,6 @@ const state = {
   handoffSessions: 0,
   handoffLinked: 0,
   meta: { ok: true, error: '', badLines: 0, scannedFiles: 0, unreadableFiles: 0 },
-  gateway: { status: 'disabled' },
   hostname: '',
   dataDir: '/data/agents',
   // replay-scoped
@@ -293,7 +292,6 @@ async function refresh() {
       handoffSessions: handoffs.sessions || 0,
       handoffLinked: handoffs.linked || 0,
       meta: health.data || state.meta,
-      gateway: health.gateway || { status: 'disabled' },
       hostname: health.hostname || '',
       backendDown: false, loaded: true, refreshedAt: Date.now(),
     });
@@ -441,14 +439,22 @@ function sparkline(counts) {
 function renderMasthead() {
   const integ = (state.meta.badLines || 0) + (state.meta.unreadableFiles || 0) + (state.meta.truncatedEvents || 0);
   const showInteg = state.loaded && integ > 0 && state.meta.ok !== false;
-  const gw = state.gateway.status || 'disabled';
-  const gwDot = gw === 'up' ? '#3d7317' : gw === 'down' ? '#f0561d' : '#6a6e73';
-  const gwLabel = gw === 'up' ? 'Gateway up' : gw === 'down' ? 'Gateway down' : 'Gateway disabled';
-  const gwTip = gw === 'disabled' ? 'GATEWAY_URL unset — health checks disabled' : 'OpenClaw gateway health';
 
-  const refreshed = state.backendDown
-    ? `<span class="masthead-item hide-sm" title="The console cannot reach its backend"><span class="dot sm" style="background:#f0561d"></span>backend unreachable</span>`
-    : `<span class="masthead-item dim hide-sm" title="Polling every 5 s"><span class="dot sm pulse" style="background:#3d7317"></span>refreshed ${rel(state.refreshedAt, state.now)}</span>`;
+  // Whether the Claw being viewed is up. This replaced a global gateway health
+  // check, which could only ever name one gateway while the console spans many
+  // Claws — so it sat at "disabled" and said nothing about what you were
+  // looking at. Readiness is per Claw and already known from the picker.
+  const claw = state.claws.find((c) => c.namespace === state.namespace && c.name === state.claw);
+  const health = state.backendDown
+    ? `<span class="masthead-item hide-sm" title="The console cannot reach its own API">
+        <span class="dot sm" style="background:#f0561d"></span>backend unreachable</span>`
+    : (claw && !state.local
+      ? `<span class="masthead-item hide-sm" title="${claw.ready
+          ? 'This Claw\'s pod is running and ready.'
+          : 'This Claw has no ready pod, so its agents cannot be read.'}">
+          <span class="dot sm${claw.ready ? ' pulse' : ''}" style="background:${claw.ready ? '#3d7317' : '#f0561d'}"></span>
+          ${esc(claw.name)} ${claw.ready ? 'ready' : 'not ready'}</span>`
+      : '');
 
   return `<header class="masthead">
     <a class="brand" href="#/">
@@ -465,8 +471,7 @@ function renderMasthead() {
         <rect x="7.3" y="6" width="1.4" height="4" fill="#151515"></rect>
         <rect x="7.3" y="11" width="1.4" height="1.4" fill="#151515"></rect>
       </svg>${integ}</button>` : ''}
-    <span class="masthead-item hide-sm" title="${esc(gwTip)}"><span class="dot sm" style="background:${gwDot}"></span>${gwLabel}</span>
-    ${refreshed}
+    ${health}
     <button class="icon-btn" data-act="theme" title="Toggle light/dark">${state.theme === 'light' ? '☾' : '☀'}</button>
     <span class="masthead-host">${esc(state.hostname)}</span>
     ${renderUserMenu()}

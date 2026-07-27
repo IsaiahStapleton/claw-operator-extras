@@ -454,7 +454,6 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	snap := store.snapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"gateway":      gatewayHealth(r.Context(), s.gatewayURL),
 		"data":         toDataStatus(snap),
 		"staleAfterMs": staleAfter.Milliseconds(),
 		"hostname":     s.hostname,

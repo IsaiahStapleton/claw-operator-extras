@@ -85,7 +85,6 @@ silently dropped.
 | `CLAW_AGENTS_DIR` | `/home/node/.openclaw/agents` | Where agent state lives inside a Claw pod |
 | `CLAW_CONTAINER` | `gateway` | Container in the Claw pod holding that state |
 | `AGENT_DATA_DIR` | unset | Setting it switches to local single-directory mode (development); leave unset in the cluster |
-| `GATEWAY_URL` | unset | Claw gateway to health-check. Unset reports "disabled" rather than guessing. |
 | `EXCLUDED_AGENTS` | unset | Comma-separated agent directories to hide |
 | `AGENT_META` | unset | JSON map of `{agent: {emoji, title, desc}}` for display |
 | `MEMORY_PATH_PATTERN` | `(?:^\|/)(?:memory\|wiki)/[\w\-./]*\.md` | Regexp matching vault note paths. The default covers all three of OpenClaw's stores; override it for a vault kept elsewhere. |
