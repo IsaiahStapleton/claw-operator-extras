@@ -33,11 +33,90 @@ const handoffWindowMillis = 120_000
 var (
 	spawnNameRE = regexp.MustCompile(`(?i)spawn|handoff`)
 	askAgentRE  = regexp.MustCompile(`\bask-agent\s+([\w-]+)`)
-	// OpenClaw stamps delegated prompts with the originating session, e.g.
-	// "sourceSession=agent:default:dashboard:c2a2bab7-…". That is a declared
-	// parent, so it outranks the timing heuristic below.
-	sourceSessionRE = regexp.MustCompile(`sourceSession=agent:([^\s:]+):(?:[^\s:]+:)*([0-9a-fA-F-]{36})`)
+	// OpenClaw routes agent-to-agent work through sessions_send, which stamps
+	// the sending session onto the prompt:
+	//
+	//   [Inter-session message] sourceSession=agent:quill:main
+	//   sourceChannel=unknown sourceTool=sessions_send isUser=false
+	//
+	// The value is a session KEY, and a key does not have to end in a uuid.
+	// Requiring one — as this pattern used to — matched
+	// "agent:default:dashboard:<uuid>" and missed "agent:quill:main" and
+	// "agent:stitch:main" entirely, so every message an agent sent from its own
+	// main session was invisible. On a real fleet that hid 20 of 42 messages,
+	// including all 8 of quill's to stitch, and left a topology where only the
+	// coordinator appeared to talk to anyone.
+	sourceSessionRE = regexp.MustCompile(`sourceSession=(\S+)`)
+	sourceToolRE    = regexp.MustCompile(`sourceTool=(\S+)`)
 )
+
+// sessionKeyAgent returns the agent named by a session key
+// ("agent:<agent>:<rest>"), or "" when the value is not one.
+func sessionKeyAgent(key string) string {
+	parts := strings.Split(key, ":")
+	if len(parts) < 3 || parts[0] != "agent" || parts[1] == "" {
+		return ""
+	}
+	return parts[1]
+}
+
+// sessionsByKey indexes sessions by the key the runtime gave them, so a
+// sourceSession stamp can be resolved back to the session that sent it. Keys
+// are not unique over time — an agent's "main" session key is reused — so each
+// key keeps its candidates and the resolver picks by time.
+type keyedSession struct {
+	id      string
+	startMs int64
+}
+
+func sessionsByKey(sessions []Session) map[string][]keyedSession {
+	out := map[string][]keyedSession{}
+	for _, s := range sessions {
+		key, start := "", int64(0)
+		for _, e := range s.Events {
+			if e.SessionKey != "" && key == "" {
+				key = e.SessionKey
+			}
+			if ms := tsMillis(e.TS); ms != 0 && (start == 0 || ms < start) {
+				start = ms
+			}
+		}
+		if key != "" {
+			out[key] = append(out[key], keyedSession{id: s.SessionID, startMs: start})
+		}
+	}
+	for k := range out {
+		sort.SliceStable(out[k], func(i, j int) bool { return out[k][i].startMs < out[k][j].startMs })
+	}
+	return out
+}
+
+// resolveSourceSession picks which session a key referred to at a given moment:
+// the newest one that had already started. Returns "" when the key names no
+// session this scan read, which is normal — the sender may be older than the
+// per-agent session cap.
+func resolveSourceSession(index map[string][]keyedSession, key string, atMs int64) string {
+	best := ""
+	for _, c := range index[key] {
+		if c.startMs <= atMs || atMs == 0 {
+			best = c.id
+		}
+	}
+	if best == "" && len(index[key]) > 0 {
+		best = index[key][0].id
+	}
+	// Some keys end in the sending session's own id ("…:dashboard:<uuid>").
+	// That still identifies the sender when the key itself was never indexed —
+	// because the sending session predates the per-agent cap, say.
+	if best == "" {
+		if m := trailingUUIDRE.FindStringSubmatch(key); m != nil {
+			best = m[1]
+		}
+	}
+	return best
+}
+
+var trailingUUIDRE = regexp.MustCompile(`([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$`)
 
 // declaredHandoffs reads parent links that the runtime states outright, rather
 // than inferring them from timing. Cross-agent links only: a session
@@ -47,6 +126,7 @@ func declaredHandoffs(sessions []Session, knownAgents []string) []Handoff {
 	for _, a := range knownAgents {
 		known[a] = true
 	}
+	index := sessionsByKey(sessions)
 	edges := []Handoff{}
 	seen := map[string]bool{}
 	for _, s := range sessions {
@@ -62,25 +142,38 @@ func declaredHandoffs(sessions []Session, knownAgents []string) []Handoff {
 			if m == nil {
 				continue
 			}
-			fromAgent, fromSession := m[1], m[2]
-			if fromAgent == s.Agent || !known[fromAgent] || fromSession == s.SessionID {
+			sourceKey := m[1]
+			fromAgent := sessionKeyAgent(sourceKey)
+			if fromAgent == "" || fromAgent == s.Agent || !known[fromAgent] {
 				continue
 			}
-			key := fromSession + "->" + s.SessionID
+			fromSession := resolveSourceSession(index, sourceKey, tsMillis(e.TS))
+			if fromSession == s.SessionID {
+				continue
+			}
+			tool := ""
+			if t := sourceToolRE.FindStringSubmatch(prompt); t != nil {
+				tool = t[1]
+			}
+			// One edge per message, not per session pair: two agents exchanging
+			// eight messages is a different fact from exchanging one, and the
+			// topology counts edges to show how much traffic a link carries.
+			key := sourceKey + "->" + s.SessionID + "@" + e.TS
 			if seen[key] {
 				continue
 			}
 			seen[key] = true
 			edges = append(edges, Handoff{
 				FromAgent: fromAgent, FromSessionID: fromSession,
-				ToAgent: s.Agent, ToSessionID: s.SessionID, TS: e.TS,
+				ToAgent: s.Agent, ToSessionID: s.SessionID, TS: e.TS, Tool: tool,
 			})
 		}
 	}
 	return edges
 }
 
-// Handoff is one inferred agent-to-agent spawn edge.
+// Handoff is one agent-to-agent edge: a message the runtime routed from one
+// agent's session into another's, or a spawn inferred from timing.
 type Handoff struct {
 	FromAgent     string `json:"fromAgent"`
 	FromSessionID string `json:"fromSessionId"`
@@ -88,6 +181,9 @@ type Handoff struct {
 	ToAgent       string `json:"toAgent"`
 	ToSessionID   string `json:"toSessionId"`
 	TS            string `json:"ts"`
+	// Tool is what carried it, e.g. "sessions_send". Empty for an inferred
+	// edge, which is how the UI can tell a recorded fact from a guess.
+	Tool string `json:"tool,omitempty"`
 }
 
 // spawnTarget resolves the target agent of a spawn-like tool.call, or "".

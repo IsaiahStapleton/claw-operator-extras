@@ -1078,6 +1078,10 @@ function viewTopology() {
   const sel = state.selEdge && groups[state.selEdge];
   const selList = (sel || []).slice().sort((a, b) => ms(b.ts) - ms(a.ts)).map((h) => `<div class="row">
       <span class="when" title="${esc(exact(h.ts))}">${rel(h.ts, state.now)}</span>
+      <span class="chip" style="${h.tool
+        ? 'background:var(--ok-bg);color:var(--ok)' : 'background:var(--warn-bg);color:var(--warn)'}"
+        title="${h.tool ? 'The runtime recorded this message and what carried it.' : 'Inferred from timing, not recorded by the runtime.'}"
+        >${esc(h.tool || 'inferred')}</span>
       <span>${agentMeta(h.fromAgent).emoji} <a class="path" href="#/agents/${encodeURIComponent(h.fromAgent)}/sessions/${encodeURIComponent(h.fromSessionId)}">${esc(h.fromSessionId)}</a></span>
       <span style="color:var(--sub)">→</span>
       <span>${agentMeta(h.toAgent).emoji} <a class="path" href="#/agents/${encodeURIComponent(h.toAgent)}/sessions/${encodeURIComponent(h.toSessionId)}">${esc(h.toSessionId)}</a></span>
