@@ -119,7 +119,6 @@ const state = {
   handoffSessions: 0,
   handoffLinked: 0,
   meta: { ok: true, error: '', badLines: 0, scannedFiles: 0, unreadableFiles: 0 },
-  hostname: '',
   dataDir: '/data/agents',
   // replay-scoped
   session: null,
@@ -291,7 +290,6 @@ async function refresh() {
       handoffSessions: handoffs.sessions || 0,
       handoffLinked: handoffs.linked || 0,
       meta: health.data || state.meta,
-      hostname: health.hostname || '',
       backendDown: false, loaded: true,
     });
   } catch (err) {
@@ -455,7 +453,7 @@ function renderMasthead() {
         <rect x="7.3" y="11" width="1.4" height="1.4" fill="#151515"></rect>
       </svg>${integ}</button>` : ''}
     <button class="icon-btn" data-act="theme" title="Toggle light/dark">${state.theme === 'light' ? '☾' : '☀'}</button>
-    <span class="masthead-host">${esc(state.hostname)}</span>
+    <span class="masthead-user">${esc(state.user)}</span>
     ${renderUserMenu()}
     ${state.integrityOpen ? `<div class="popover">
       <h3 class="display">Data integrity</h3>

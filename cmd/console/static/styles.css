@@ -115,7 +115,9 @@ select, input, button { font-family: inherit; font-size: inherit; }
 
 .masthead-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #d2d2d2; }
 .masthead-item.dim { color: #8a8d90; }
-.masthead-host { font-family: 'Red Hat Mono', monospace; font-size: 12px; color: #6a6e73; }
+/* Who is signed in. This was the console pod's hostname, which named the
+   replica that served the request rather than anything about the reader. */
+.masthead-user { font-size: 12.5px; color: #d2d2d2; }
 
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
 .dot.sm { width: 7px; height: 7px; }
@@ -511,7 +513,7 @@ td.nowrap { white-space: nowrap; }
 
 @media (max-width: 760px) {
   .sidebar { display: none; }
-  .masthead-item.hide-sm, .masthead-host { display: none; }
+  .masthead-item.hide-sm, .masthead-user { display: none; }
   .page { padding: 16px 12px 24px; }
 }
 
