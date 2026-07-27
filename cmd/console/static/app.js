@@ -91,7 +91,6 @@ const state = {
   theme: 'light',
   loaded: false,
   now: Date.now(),
-  refreshedAt: 0,
   backendDown: false,
   integrityOpen: false,
   runLimit: 25,
@@ -293,7 +292,7 @@ async function refresh() {
       handoffLinked: handoffs.linked || 0,
       meta: health.data || state.meta,
       hostname: health.hostname || '',
-      backendDown: false, loaded: true, refreshedAt: Date.now(),
+      backendDown: false, loaded: true,
     });
   } catch (err) {
     state.backendDown = true;
@@ -440,22 +439,6 @@ function renderMasthead() {
   const integ = (state.meta.badLines || 0) + (state.meta.unreadableFiles || 0) + (state.meta.truncatedEvents || 0);
   const showInteg = state.loaded && integ > 0 && state.meta.ok !== false;
 
-  // Whether the Claw being viewed is up. This replaced a global gateway health
-  // check, which could only ever name one gateway while the console spans many
-  // Claws — so it sat at "disabled" and said nothing about what you were
-  // looking at. Readiness is per Claw and already known from the picker.
-  const claw = state.claws.find((c) => c.namespace === state.namespace && c.name === state.claw);
-  const health = state.backendDown
-    ? `<span class="masthead-item hide-sm" title="The console cannot reach its own API">
-        <span class="dot sm" style="background:#f0561d"></span>backend unreachable</span>`
-    : (claw && !state.local
-      ? `<span class="masthead-item hide-sm" title="${claw.ready
-          ? 'This Claw\'s pod is running and ready.'
-          : 'This Claw has no ready pod, so its agents cannot be read.'}">
-          <span class="dot sm${claw.ready ? ' pulse' : ''}" style="background:${claw.ready ? '#3d7317' : '#f0561d'}"></span>
-          ${esc(claw.name)} ${claw.ready ? 'ready' : 'not ready'}</span>`
-      : '');
-
   return `<header class="masthead">
     <a class="brand" href="#/">
       <img class="brand-logo" src="openclaw.svg" alt="" aria-hidden="true">
@@ -471,7 +454,6 @@ function renderMasthead() {
         <rect x="7.3" y="6" width="1.4" height="4" fill="#151515"></rect>
         <rect x="7.3" y="11" width="1.4" height="1.4" fill="#151515"></rect>
       </svg>${integ}</button>` : ''}
-    ${health}
     <button class="icon-btn" data-act="theme" title="Toggle light/dark">${state.theme === 'light' ? '☾' : '☀'}</button>
     <span class="masthead-host">${esc(state.hostname)}</span>
     ${renderUserMenu()}
