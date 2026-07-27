@@ -41,6 +41,10 @@ type Event struct {
 	ModelID  string         `json:"modelId"`
 	Provider string         `json:"provider"`
 	Data     map[string]any `json:"data"`
+	// SessionKey is how the runtime names the session, e.g.
+	// "agent:stitch:stitch-daily-2026-07-26" or "agent:default:subagent:<uuid>".
+	// It is the only place the runtime states what kind of work a session is.
+	SessionKey string `json:"sessionKey"`
 }
 
 // Tokens aggregates model.completed usage for a run.
@@ -111,6 +115,7 @@ func parseTrajectory(text string) (events []Event, badLines int) {
 		e.RunID, _ = obj["runId"].(string)
 		e.ModelID, _ = obj["modelId"].(string)
 		e.Provider, _ = obj["provider"].(string)
+		e.SessionKey, _ = obj["sessionKey"].(string)
 		if d, ok := obj["data"].(map[string]any); ok {
 			e.Data = d
 		}
@@ -432,7 +437,7 @@ func retainForAnalysis(events []Event) []Event {
 		case "session.started", "prompt.submitted", "tool.call":
 			out = append(out, Event{
 				Type: e.Type, TS: e.TS, Seq: e.Seq, RunID: e.RunID,
-				ModelID: e.ModelID, Provider: e.Provider,
+				ModelID: e.ModelID, Provider: e.Provider, SessionKey: e.SessionKey,
 				Data: trimAnalysisData(e),
 			})
 		}

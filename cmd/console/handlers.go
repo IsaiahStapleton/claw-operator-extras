@@ -315,8 +315,19 @@ func (s *server) handleHandoffs(w http.ResponseWriter, r *http.Request) {
 	}
 	snap := store.snapshot()
 	edges := findHandoffs(snap.Sessions, snap.Agents)
+	// An edge exists only where the runtime stated a parent. Reporting how many
+	// sessions there are and how few carry one keeps the graph from reading as
+	// a complete picture of who works with whom, which it is not.
+	linked := map[string]bool{}
+	for _, e := range edges {
+		linked[e.ToSessionID] = true
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"handoffs": edges, "data": toDataStatus(snap),
+		"handoffs": edges,
+		"origins":  sessionOrigins(snap.Sessions),
+		"sessions": len(snap.Sessions),
+		"linked":   len(linked),
+		"data":     toDataStatus(snap),
 	})
 }
 

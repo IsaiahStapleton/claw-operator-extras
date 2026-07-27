@@ -116,6 +116,9 @@ const state = {
   watchingSince: '',
   memPersistent: false,
   handoffs: [],
+  origins: [],
+  handoffSessions: 0,
+  handoffLinked: 0,
   meta: { ok: true, error: '', badLines: 0, scannedFiles: 0, unreadableFiles: 0 },
   gateway: { status: 'disabled' },
   hostname: '',
@@ -286,6 +289,9 @@ async function refresh() {
       watchingSince: memory.watchingSince || '',
       memPersistent: !!memory.persistent,
       handoffs: handoffs.handoffs || [],
+      origins: handoffs.origins || [],
+      handoffSessions: handoffs.sessions || 0,
+      handoffLinked: handoffs.linked || 0,
       meta: health.data || state.meta,
       gateway: health.gateway || { status: 'disabled' },
       hostname: health.hostname || '',
@@ -1101,6 +1107,50 @@ function viewTopology() {
       <div class="section-head">${sel ? esc(state.selEdge.replace('→', ' → ')) + ` · ${sel.length} handoffs (${state.topoRange})` : 'Handoff events'}</div>
       ${sel ? selList : `<div class="section-hint">Click an edge to list the underlying handoff events. Click a node to open that agent.</div>`}
     </div>`}
+    ${renderOrigins()}
+  </div>`;
+}
+
+// What the topology can and cannot see, and where the work actually comes from.
+//
+// An edge exists only where OpenClaw stamped a parent onto the delegated
+// prompt, which it does on one delivery path. On a real fleet that produced two
+// edges against 239 sessions — not because the agents do not collaborate, but
+// because nothing recorded it. Saying so, and showing the triggers the runtime
+// does record, beats a graph that quietly implies it knows the whole story.
+const TRIGGERS = {
+  user: 'started by a user or an API call',
+  cron: 'fired by a schedule',
+  heartbeat: 'periodic wake-up',
+  memory: 'memory maintenance',
+  unrecorded: 'no trigger recorded',
+};
+
+function renderOrigins() {
+  const origins = state.origins || [];
+  if (!origins.length) return '';
+  const linked = state.handoffLinked || 0;
+  const sessions = state.handoffSessions || 0;
+  const rows = origins.map((o) => {
+    const m = agentMeta(o.agent);
+    return `<div class="row">
+      <span class="nowrap">${m.emoji} <a href="#/agents/${encodeURIComponent(o.agent)}">${esc(m.title)}</a></span>
+      <span class="chip" style="background:var(--surface2);color:var(--sub)">${esc(o.trigger)}</span>
+      <span style="color:var(--sub);font-size:12px">${esc(TRIGGERS[o.trigger] || 'trigger recorded by the runtime')}</span>
+      ${o.kind && o.kind !== 'unknown'
+        ? `<span class="chip" style="background:var(--info-bg);color:var(--info)" title="shape of the session key">${esc(o.kind)}</span>` : ''}
+      <span class="grow"></span>
+      <span class="mono" style="font-size:12px">${o.sessions} session${o.sessions === 1 ? '' : 's'}</span>
+      <span class="when">${o.lastAt ? rel(o.lastAt, state.now) : ''}</span>
+    </div>`;
+  }).join('');
+
+  return `<div class="card clip">
+    <div class="section-head">How work starts · ${sessions} sessions, ${linked} with a recorded parent</div>
+    <div class="section-hint">An edge above is drawn only where the runtime stamped the originating session onto
+      the delegated prompt. It does that on one delivery path, so most sessions carry no parent at all — that is a
+      gap in what OpenClaw records, not evidence the agents worked alone. These are the triggers it does record.</div>
+    ${rows}
   </div>`;
 }
 
@@ -1708,34 +1758,40 @@ function viewWiki() {
           <span class="toggle${Object.keys(state.wikiExpanded).length ? ' on' : ''}"><span class="knob"></span></span>
         </div>
       </div>
-      ${state.wikiPage ? renderWikiReader() : `<div class="gc-hint">Click a node to read the page.</div>`}
+      <div class="gc-hint">Click a node to read the page it stands for.</div>
     </aside>
+    ${state.wikiPage ? renderWikiReader() : ''}
   </div>`;
 }
 
 const rel2 = (ts) => rel(ts, state.now);
 
+// Clicking a node opens the page itself. The point of the graph is to find a
+// memory worth reading; showing only its metadata and hiding the actual note
+// behind a "page source" disclosure made the last step the hardest one.
 function renderWikiReader() {
   const { page, content, error } = state.wikiPage;
   const t = wikiType(page.pageType);
-  const claims = (page.claims || []).map((c) => `<li style="margin-bottom:6px">
+  const claims = (page.claims || []).map((c) => `<li>
       ${esc(c.text || c.id || '')}
       ${c.status ? `<span class="chip" style="background:var(--surface2);color:var(--sub);margin-left:4px">${esc(c.status)}</span>` : ''}
       ${c.confidence ? `<span class="chip" style="background:var(--info-bg);color:var(--info)">${(c.confidence * 100).toFixed(0)}%</span>` : ''}
     </li>`).join('');
-  return `<div class="gc-reader">
-    <div class="gc-reader-head">
+
+  return `<section class="wiki-reader">
+    <div class="reader-head">
       <span class="chip" style="background:var(--surface2);color:${t.color};border:1px solid ${t.color}">${t.label}</span>
-      <span style="flex:1;font-weight:600;font-size:13px">${esc(page.title || page.path)}</span>
+      <span class="reader-title">${esc(page.title || page.path)}</span>
+      <span class="when">${rel2(page.lastRefreshedAt || page.modifiedAt)}</span>
+      <span class="grow"></span>
+      <span class="mono reader-path">${esc(page.path || '')}</span>
       <button class="link-btn" data-act="wiki-close">close</button>
     </div>
-    <div class="when" style="margin-bottom:8px">${rel2(page.lastRefreshedAt || page.modifiedAt)}</div>
-    ${error ? `<div class="empty">${esc(error)}</div>` : `
-      ${claims ? `<ul style="margin:0 0 10px;padding-left:16px;font-size:12.5px;line-height:1.5">${claims}</ul>` : ''}
-      <details><summary style="cursor:pointer;color:var(--link);font-size:12px">Page source</summary>
-        <pre class="mono" style="white-space:pre-wrap;font-size:11.5px;line-height:1.5;background:var(--surface2);border:1px solid var(--border-soft);border-radius:6px;padding:8px;margin-top:6px;max-height:280px;overflow:auto">${esc(content || '')}</pre>
-      </details>`}
-  </div>`;
+    ${error
+      ? `<div class="empty">${esc(error)}</div>`
+      : `${claims ? `<div class="wiki-claims"><div class="gc-label">Claims</div><ul>${claims}</ul></div>` : ''}
+         <article class="md">${renderMarkdown(content)}</article>`}
+  </section>`;
 }
 
 /* ----------------------------------------------------------------- render */
