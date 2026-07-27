@@ -612,7 +612,7 @@ function renderRunsTable(lockedAgent) {
   }).join('');
 
   return `${renderToolbar(lockedAgent)}
-    <div class="table-scroll"><table>
+    <div class="table-scroll" data-scroll-key="runs-table"><table>
       <thead><tr>
         <th><button class="sort-btn" data-act="sort" data-key="time">Started${arrow('time')}</button></th>
         ${lockedAgent ? '' : '<th>Agent</th>'}
@@ -978,7 +978,7 @@ function renderEvents(evs) {
         <span class="summary${isErr ? ' err' : ''}">${esc(summary)}</span>
         <span class="caret">${open ? '▾' : '▸'}</span>
       </div>
-      ${open ? `<pre>${esc(JSON.stringify(e.data || {}, null, 2))}</pre>` : ''}
+      ${open ? `<pre data-scroll-key="ev:${esc(key)}">${esc(JSON.stringify(e.data || {}, null, 2))}</pre>` : ''}
     </div>`;
   }).join('');
   return `<div class="events" style="padding:4px 8px 6px">${rows}</div>`;
@@ -1382,7 +1382,7 @@ function viewMemoryNotes() {
           <input placeholder="Filter by path…" data-act="mem-search" value="${esc(q.q || '')}">
         </div>
         ${notes.length
-          ? `<div class="tree-body">${renderTree(tree, '', selected, 0)}</div>`
+          ? `<div class="tree-body" data-scroll-key="tree">${renderTree(tree, '', selected, 0)}</div>`
           : `<div class="gc-hint" style="padding:14px">No note path matches that filter.</div>`}
       </aside>
       <section class="reader">${reader}</section>
@@ -1723,7 +1723,7 @@ function viewWiki() {
         <button data-act="graph-reset">Reset zoom</button>
       </div>
     </div>
-    <aside class="graph-controls">
+    <aside class="graph-controls" data-scroll-key="graph-controls">
       <div class="gc-head">
         <span class="display" style="font-weight:700;font-size:15px">Graph controls</span>
         <span class="mono" style="font-size:11px;color:var(--sub)">${sim.nodes.length}n · ${sim.links.length}e</span>
@@ -1778,7 +1778,7 @@ function renderWikiReader() {
       ${c.confidence ? `<span class="chip" style="background:var(--info-bg);color:var(--info)">${(c.confidence * 100).toFixed(0)}%</span>` : ''}
     </li>`).join('');
 
-  return `<section class="wiki-reader">
+  return `<section class="wiki-reader" data-scroll-key="wiki:${esc(page.path || page.id || '')}">
     <div class="reader-head">
       <span class="chip" style="background:var(--surface2);color:${t.color};border:1px solid ${t.color}">${t.label}</span>
       <span class="reader-title">${esc(page.title || page.path)}</span>
@@ -1802,39 +1802,38 @@ function renderWikiReader() {
 // expanding a single event. Scroll positions are captured before the swap and
 // put back after, unless the route itself changed — a new page should start at
 // the top.
-// Each scroller keeps its own notion of what counts as the same view, because
-// they do not change together: opening another note should put the reader at the
-// top of it while leaving the tree exactly where it was.
-const SCROLLERS = [
-  { sel: '#main', key: (r) => r.seg.join('/') + '|' + (r.q.note || '') },
-  { sel: '.tree-body', key: (r) => r.seg.join('/') },
-  { sel: '.graph-controls', key: (r) => r.seg.join('/') },
-];
-
-const lastKeys = {};
-
-function captureScroll(r) {
+// Anything that scrolls declares a data-scroll-key, and that key carries
+// whatever identifies the thing being scrolled. Matching keys before and after
+// a render means the position is kept; a key that changed — a different route,
+// a different note, a different wiki page — means it is not, so a new thing to
+// read still starts at the top. Both axes are restored: a maintained list of
+// selectors and scrollTop alone missed the horizontal scroll inside an event
+// payload, and missed the wiki reader entirely.
+function captureScroll() {
   const out = {};
-  SCROLLERS.forEach(({ sel, key }) => {
-    const k = key(r);
-    const el = $(sel);
-    if (el && el.scrollTop && lastKeys[sel] === k) out[sel] = el.scrollTop;
-    lastKeys[sel] = k;
+  document.querySelectorAll('[data-scroll-key]').forEach((el) => {
+    if (el.scrollTop || el.scrollLeft) out[el.dataset.scrollKey] = [el.scrollTop, el.scrollLeft];
   });
   return out;
 }
 
 function restoreScroll(saved) {
-  Object.keys(saved).forEach((sel) => {
-    const el = $(sel);
-    if (el) el.scrollTop = saved[sel];
+  document.querySelectorAll('[data-scroll-key]').forEach((el) => {
+    const pos = saved[el.dataset.scrollKey];
+    if (!pos) return;
+    el.scrollTop = pos[0];
+    el.scrollLeft = pos[1];
   });
 }
 
 function render() {
   const r = route();
   const root = $('#root');
-  const saved = captureScroll(r);
+  const saved = captureScroll();
+  // What the main pane is showing. Opening a different note or run is a
+  // different thing to read, so it starts at the top rather than inheriting a
+  // scroll position from whatever was there before.
+  const mainKey = 'main:' + r.seg.join('/') + '|' + (r.q.note || '');
 
   if (!state.loaded) {
     root.innerHTML = renderMasthead() + `<div class="loading">Loading agent data…</div>`;
@@ -1892,7 +1891,8 @@ function render() {
       </div>` : '';
 
   root.innerHTML = renderMasthead() + banner +
-    `<div class="body">${renderSidebar(r)}<main class="main" id="main">${main}</main></div>`;
+    `<div class="body">${renderSidebar(r)}
+      <main class="main" id="main" data-scroll-key="${esc(mainKey)}">${main}</main></div>`;
   restoreScroll(saved);
 
   if (r.isReplay && state.follow && isRunningSession(state.session)) scrollToBottom();
