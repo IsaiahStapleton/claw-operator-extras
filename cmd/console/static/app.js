@@ -1275,10 +1275,73 @@ function renderTree(node, prefix, selected, depth) {
   return dirRows + fileRows;
 }
 
+// resolveNotePath turns a link written inside a note into a store-relative
+// path, the same way the server resolves body links when it builds the graph.
+// Returns "" for anything that is not a note reference.
+function resolveNotePath(basePath, target) {
+  if (!target || /^[a-z][a-z0-9+.-]*:/i.test(target)) return '';
+  target = target.split('#')[0].trim();
+  if (!target) return '';
+  if (!target.endsWith('.md')) target += '.md';
+  if (target.startsWith('/')) return target.replace(/^\/+/, '');
+  const parts = String(basePath || '').split('/');
+  parts.pop(); // drop the filename; links resolve against the directory
+  target.split('/').forEach((seg) => {
+    if (seg === '' || seg === '.') return;
+    if (seg === '..') parts.pop();
+    else parts.push(seg);
+  });
+  return parts.join('/');
+}
+
+// noteIndex is what a link can point at: every note on disk, plus a title
+// lookup for [[wikilinks]], which name a page rather than a path.
+function noteIndex() {
+  const byPath = new Set((state.memory || []).map((w) => w.notePath));
+  const byTitle = {};
+  const add = (p) => { if (p && p.title && p.path) byTitle[p.title.toLowerCase()] = p.path; };
+  if (state.wiki) {
+    (state.wiki.pages || []).forEach(add);
+    Object.values(state.wiki.sources || {}).forEach(add);
+  }
+  return { byPath, byTitle };
+}
+
 // A deliberately small markdown renderer. Input is agent-written and untrusted,
 // so everything is escaped first and only then given structure — no raw HTML
 // from a note ever reaches the page.
-function renderMarkdown(src) {
+//
+// opts.basePath and opts.link make the note's own links live. A page that cites
+// its sources is only half readable if following the citation means finding the
+// file by hand. A link is only rendered as a link when its target actually
+// exists, so following one never lands on an error.
+function renderMarkdown(src, opts) {
+  const { basePath = '', link = null } = opts || {};
+  const idx = link ? noteIndex() : null;
+
+  const noteHref = (path) => (link === 'notes'
+    ? `#/memory?tab=notes&note=${encodeURIComponent(path)}`
+    : null);
+
+  // A resolved target becomes an anchor for the notes tree (real navigation) or
+  // a click target for the wiki reader (which swaps the page in place).
+  const linkTo = (path, label) => {
+    const href = noteHref(path);
+    return href
+      ? `<a class="md-wl" href="${href}">${label}</a>`
+      : `<a class="md-wl" data-act="wiki-link" data-path="${esc(path)}">${label}</a>`;
+  };
+
+  const resolve = (target) => {
+    if (!idx) return '';
+    const p = resolveNotePath(basePath, target);
+    return p && idx.byPath.has(p) ? p : '';
+  };
+
+  return renderMarkdownBody(src, { resolve, linkTo, idx });
+}
+
+function renderMarkdownBody(src, ctx) {
   let text = String(src || '');
   let front = '';
   const fm = text.match(/^---\n([\s\S]*?)\n---\n?/);
@@ -1292,10 +1355,26 @@ function renderMarkdown(src) {
   text = text.replace(/```[^\n]*\n([\s\S]*?)```/g, (_, code) =>
     ` ${blocks.push(`<pre class="md-code">${esc(code.replace(/\n$/, ''))}</pre>`) - 1} `);
 
+  const { resolve, linkTo, idx } = ctx || {};
+
   const inline = (s) => esc(s)
     .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]/g, '<span class="md-wl">$1</span>')
-    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<span class="md-wl">$1</span>')
+    // [[Wikilinks]] name a page by title rather than by path.
+    .replace(/\[\[([^\]|#]+)(?:[|#]([^\]]*))?\]\]/g, (m, name, alias) => {
+      const label = (alias || name).trim();
+      const path = idx && idx.byTitle[name.trim().toLowerCase()];
+      return path ? linkTo(path, label) : `<span class="md-wl">${label}</span>`;
+    })
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, target) => {
+      const path = resolve ? resolve(target) : '';
+      if (path) return linkTo(path, label);
+      // An off-site link stays a link; anything else is shown as plain text
+      // rather than offered as a link that would go nowhere.
+      if (/^https?:\/\//i.test(target)) {
+        return `<a class="md-wl" href="${esc(target)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+      }
+      return `<span class="md-wl">${label}</span>`;
+    })
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
 
@@ -1365,7 +1444,7 @@ function viewMemoryNotes() {
       </div>
       ${body === undefined
         ? '<div class="loading">Reading…</div>'
-        : `<article class="md">${renderMarkdown(body)}</article>`}`;
+        : `<article class="md">${renderMarkdown(body, { basePath: selected, link: 'notes' })}</article>`}`;
   }
 
   return `<div class="page">
@@ -1790,7 +1869,7 @@ function renderWikiReader() {
     ${error
       ? `<div class="empty">${esc(error)}</div>`
       : `${claims ? `<div class="wiki-claims"><div class="gc-label">Claims</div><ul>${claims}</ul></div>` : ''}
-         <article class="md">${renderMarkdown(content)}</article>`}
+         <article class="md">${renderMarkdown(content, { basePath: page.path, link: 'wiki' })}</article>`}
   </section>`;
 }
 
@@ -2022,6 +2101,7 @@ function onClick(e) {
       return render();
     }
     case 'wiki-open':
+    case 'wiki-link':
       return openWikiPage(el.dataset.path);
     case 'wiki-close':
       state.wikiPage = null;

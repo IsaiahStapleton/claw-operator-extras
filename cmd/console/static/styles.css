@@ -710,7 +710,12 @@ td.nowrap { white-space: nowrap; }
   background: var(--surface2); border: 1px solid var(--border-soft);
   border-radius: 8px; padding: 10px 12px; overflow-x: auto; margin: 0 0 10px;
 }
+/* A link the note actually declared. Anchors are followable; the span form is
+   the same text where the target does not exist, so a dead link never looks
+   clickable. */
 .md-wl { color: var(--link); }
+a.md-wl { cursor: pointer; }
+a.md-wl:hover { text-decoration: underline; }
 .md-front { margin-bottom: 14px; }
 .md-front summary {
   cursor: pointer; color: var(--sub); font-size: 11px;

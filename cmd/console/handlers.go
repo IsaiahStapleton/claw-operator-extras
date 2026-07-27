@@ -415,9 +415,13 @@ func (s *server) handleWikiPage(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
 		return
 	}
+	// Any indexed note may be opened, not only wiki pages: a wiki page cites
+	// sources that live outside the wiki, and a citation you cannot follow is
+	// half a citation. The path is matched against the note index below, so it
+	// can only name a file the store already lists.
 	path := r.URL.Query().Get("path")
-	if path == "" || !strings.Contains(path, "/wiki/") {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a wiki page path is required"})
+	if path == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a note path is required"})
 		return
 	}
 	notes, err := store.source.memoryNotes(r.Context())
