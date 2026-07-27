@@ -36,13 +36,18 @@ type dataStatus struct {
 	ScannedFiles    int    `json:"scannedFiles"`
 	UnreadableFiles int    `json:"unreadableFiles"`
 	TruncatedEvents int    `json:"truncatedEvents"`
+	// SkippedSessions counts sessions past the per-agent cap. It was counted
+	// during the scan and then never reported, so a capped view presented
+	// itself as the whole history — the exact thing the counter exists to
+	// prevent.
+	SkippedSessions int `json:"skippedSessions"`
 }
 
 func toDataStatus(snap *Snapshot) dataStatus {
 	return dataStatus{
 		OK: snap.OK, Error: snap.Error, BadLines: snap.BadLines,
 		ScannedFiles: snap.ScannedFiles, UnreadableFiles: snap.UnreadableFiles,
-		TruncatedEvents: snap.TruncatedEvents,
+		TruncatedEvents: snap.TruncatedEvents, SkippedSessions: snap.SkippedSessions,
 	}
 }
 
@@ -198,7 +203,10 @@ func (s *server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	}
 
 	total := len(filtered)
-	limit := clampInt(q.Get("limit"), 50, 1, 500)
+	// The page polls for the newest 500. The ceiling is well above that so a
+	// reader who is told runs were left out can ask for all of them, rather
+	// than the list quietly ending at a round number.
+	limit := clampInt(q.Get("limit"), 50, 1, 5000)
 	if limit < len(filtered) {
 		filtered = filtered[:limit]
 	}
