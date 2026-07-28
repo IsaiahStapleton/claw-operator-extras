@@ -83,7 +83,28 @@ silently dropped.
 | `GATEWAY_URL` | unset | Claw gateway to health-check. Unset reports "disabled" rather than guessing. |
 | `EXCLUDED_AGENTS` | unset | Comma-separated agent directories to hide |
 | `AGENT_META` | unset | JSON map of `{agent: {emoji, title, desc}}` for display |
+| `MEMORY_PATH_PATTERN` | `(?:^\|/)(?:memory\|wiki)/[\w\-./]*\.md` | Regexp matching vault note paths. The default covers all three of OpenClaw's stores; override it for a vault kept elsewhere. |
 | `CONSOLE_CACHE_MS` | `2000` | Minimum interval between re-indexes |
+
+## What counts as a memory write
+
+OpenClaw keeps durable notes in three places, and the console watches all of
+them:
+
+- `workspace/memory/*.md` — the shared daily and named notes
+- `workspace/wiki/main/**` — the memory wiki (concepts, entities, syntheses)
+- `<agent>/memory/dreaming/{deep,light}/*.md` — per-agent consolidation
+
+The feed lists these **as they exist on disk**, newest first. It is not derived
+from tool calls, and that distinction matters: OpenClaw's consolidation and
+wiki synthesis write notes directly, with no agent tool call to observe. On a
+real Claw a tool-derived feed found 22 notes where the stores held 422 — it
+missed every consolidation run and the entire wiki.
+
+Tool calls are still read, but only for attribution: where one recorded a
+write, it supplies the agent and session behind a note. Notes with no tool call
+are attributed to the agent whose directory holds them, and notes under
+`workspace/` belong to no single agent.
 
 ## A note on agent backends
 

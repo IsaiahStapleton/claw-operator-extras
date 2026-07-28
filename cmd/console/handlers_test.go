@@ -43,6 +43,11 @@ func testServer(t *testing.T, root string) *server {
 func fixtureRoot(t *testing.T) string {
 	t.Helper()
 	now := time.Now().UTC()
+	root := fixtureRootWithNotes(t, now)
+	return root
+}
+
+func fixtureRootWithNotes(t *testing.T, now time.Time) string {
 	root := makeDataDir(t, map[string]map[string][]string{
 		"main": {"sess-parent": {
 			ev("session.started", evOpts{TS: iso(now.Add(-20 * time.Minute))}),
@@ -52,7 +57,7 @@ func fixtureRoot(t *testing.T) string {
 				"name": "spawn_agent", "arguments": map[string]any{"agent": "security"}}}),
 			ev("tool.call", evOpts{TS: iso(now.Add(-17 * time.Minute)), Data: map[string]any{
 				"name":      "write",
-				"arguments": map[string]any{"path": "memory-map/tasks/gateway.md", "content": "OOMKilled"}}}),
+				"arguments": map[string]any{"path": "workspace/memory/gateway.md", "content": "OOMKilled"}}}),
 			ev("model.completed", evOpts{TS: iso(now.Add(-16 * time.Minute)),
 				Data: map[string]any{"usage": map[string]any{"input": float64(100), "output": float64(50)}}}),
 		}},
@@ -65,6 +70,10 @@ func fixtureRoot(t *testing.T) string {
 				"name": "bash", "arguments": map[string]any{"command": "oc get pods"}}}),
 		}},
 	})
+	// A note an agent wrote through a tool call, and one written by background
+	// consolidation with no tool call at all.
+	addNote(t, root, "workspace/memory/gateway.md", "# gateway\nOOMKilled", now.Add(-17*time.Minute))
+	addNote(t, root, "agents/main/memory/dreaming/deep/today.md", "consolidated overnight", now.Add(-1*time.Hour))
 	return root
 }
 
@@ -280,11 +289,19 @@ func TestHandleMemoryAndHandoffs(t *testing.T) {
 
 	_, mem := getJSON(t, s, "GET", "/api/memory", s.handleMemory)
 	writes := mem["writes"].([]any)
-	if len(writes) != 1 {
-		t.Fatalf("memory writes = %d, want 1", len(writes))
+	if len(writes) != 2 {
+		t.Fatalf("memory writes = %d, want 2 — both notes on disk, whether or not a tool call recorded them", len(writes))
 	}
-	if p := writes[0].(map[string]any)["notePath"]; p != "memory-map/tasks/gateway.md" {
-		t.Fatalf("notePath = %v", p)
+	paths := map[string]bool{}
+	for _, w := range writes {
+		paths[w.(map[string]any)["notePath"].(string)] = true
+	}
+	// The consolidation note has no tool call behind it and must still appear:
+	// that is the whole point of reading the store rather than the trajectory.
+	for _, want := range []string{"workspace/memory/gateway.md", "agents/main/memory/dreaming/deep/today.md"} {
+		if !paths[want] {
+			t.Fatalf("missing %q from the feed; got %v", want, paths)
+		}
 	}
 
 	_, ho := getJSON(t, s, "GET", "/api/handoffs", s.handleHandoffs)

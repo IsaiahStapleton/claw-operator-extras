@@ -312,21 +312,85 @@ func (s *server) handleHandoffs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleMemory reports the Claw's durable notes as they exist on disk.
+//
+// This deliberately does not derive the feed from tool calls. OpenClaw's
+// consolidation and wiki synthesis write notes directly, without an agent tool
+// call to observe, so a tool-derived feed saw only a fraction of them — 22 of
+// 422 notes on a real Claw. Reading the stores is the only way to answer "what
+// has my fleet committed to memory" truthfully. Where a tool call did record a
+// write, it still supplies the attribution the filesystem cannot.
 func (s *server) handleMemory(w http.ResponseWriter, r *http.Request) {
 	store, err := s.resolveStore(r)
 	if err != nil {
 		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
 		return
 	}
-	snap := store.snapshot()
-	writes := extractMemoryWrites(snap.Sessions)
 	limit := clampInt(r.URL.Query().Get("limit"), 50, 1, 500)
-	if limit < len(writes) {
-		writes = writes[:limit]
+	writes, snap, err := store.memoryFeed(r.Context(), limit)
+	if err != nil {
+		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"writes": writes, "data": toDataStatus(snap),
+		"writes": writes,
+		// Changes actually observed since this console started watching, with
+		// the lines that appeared. Empty on a cold start: nothing before the
+		// console was running is recoverable.
+		"observed": store.recentWrites(100),
+		"data":     toDataStatus(snap),
 	})
+}
+
+// handleWiki returns the memory wiki's synthesized layer as a graph, with its
+// sources alongside for expansion rather than mixed into the nodes.
+func (s *server) handleWiki(w http.ResponseWriter, r *http.Request) {
+	store, err := s.resolveStore(r)
+	if err != nil {
+		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
+		return
+	}
+	pages, err := store.wikiPages(r.Context())
+	if err != nil {
+		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
+		return
+	}
+	graph := buildWikiGraph(pages)
+	writeJSON(w, http.StatusOK, graph)
+}
+
+// handleWikiPage returns one page in full, for reading.
+func (s *server) handleWikiPage(w http.ResponseWriter, r *http.Request) {
+	store, err := s.resolveStore(r)
+	if err != nil {
+		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
+		return
+	}
+	path := r.URL.Query().Get("path")
+	if path == "" || !strings.Contains(path, "/wiki/") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a wiki page path is required"})
+		return
+	}
+	notes, err := store.source.memoryNotes(r.Context())
+	if err != nil {
+		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
+		return
+	}
+	for _, n := range notes {
+		if n.Path != path {
+			continue
+		}
+		bodies, err := store.source.readNotes(r.Context(), []memoryNote{n})
+		if err != nil {
+			writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
+			return
+		}
+		body := bodies[n.Path]
+		page := parseWikiPage(n.Path, body, n.Size, n.ModTime)
+		writeJSON(w, http.StatusOK, map[string]any{"page": page, "content": string(body)})
+		return
+	}
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "wiki page not found"})
 }
 
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {

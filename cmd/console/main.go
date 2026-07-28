@@ -99,6 +99,8 @@ func main() {
 	})
 	mux.HandleFunc("GET /api/handoffs", s.handleHandoffs)
 	mux.HandleFunc("GET /api/memory", s.handleMemory)
+	mux.HandleFunc("GET /api/wiki", s.handleWiki)
+	mux.HandleFunc("GET /api/wiki/page", s.handleWikiPage)
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.HandleFunc("GET /", s.handleStatic)

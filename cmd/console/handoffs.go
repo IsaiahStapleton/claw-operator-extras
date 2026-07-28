@@ -21,6 +21,8 @@ package main
 
 import (
 	"encoding/json"
+	"log"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -209,8 +211,35 @@ func inferHandoffs(sessions []Session, knownAgents []string, claimed map[string]
 
 // memory.go equivalent: extraction of memory-vault writes from tool.calls.
 
+// vaultPathRE matches where OpenClaw actually keeps durable notes: a memory/
+// or wiki/ directory anywhere in the path, e.g. "memory/2026-07-23.md" or
+// "/home/node/.openclaw/workspace/wiki/main/WIKI.md". Override with
+// MEMORY_PATH_PATTERN for a deployment that keeps its vault elsewhere — the
+// home-server convention, for instance, is "memory-map/".
+var vaultPathRE = compileVaultPattern(os.Getenv("MEMORY_PATH_PATTERN"))
+
+const defaultVaultPattern = `(?:^|/)(?:memory|wiki)/[\w\-./]*\.md`
+
+func compileVaultPattern(pattern string) *regexp.Regexp {
+	if pattern != "" {
+		if re, err := regexp.Compile(pattern); err == nil {
+			return re
+		}
+		log.Printf("MEMORY_PATH_PATTERN ignored (invalid regexp): %q", pattern)
+	}
+	return regexp.MustCompile(defaultVaultPattern)
+}
+
+// Native memory tools mutate the store directly rather than through a file, so
+// they are writes even though no path appears in their arguments.
+var nativeMemoryWriteTools = map[string]bool{
+	"memory_store":  true,
+	"memory_forget": true,
+	"wiki_write":    true,
+	"wiki_put":      true,
+}
+
 var (
-	vaultPathRE    = regexp.MustCompile(`memory-map/[\w\-./]*\.md`)
 	bashWriteRE    = regexp.MustCompile(`(>>?|\btee\b|\bsed\b.*-i|\bmv\b|\bcp\b)`)
 	bashReadonlyRE = regexp.MustCompile(`^\s*(cat|less|head|tail|grep|ls|find|diff|rg)\b`)
 	bashRedirectRE = regexp.MustCompile(`>>?|\btee\b`)
@@ -242,7 +271,24 @@ func extractMemoryWrites(sessions []Session) []MemoryWrite {
 			lname := strings.ToLower(name)
 			arg := toolArgs(e.Data)
 			argJSON, _ := json.Marshal(arg)
-			pathMatch := vaultPathRE.FindString(string(argJSON))
+			// The pattern anchors on a path separator, so the match carries a
+			// leading slash that is not part of the note's identity.
+			pathMatch := strings.TrimPrefix(vaultPathRE.FindString(string(argJSON)), "/")
+
+			// A native memory tool is a write even with no path in its
+			// arguments: it mutates the store itself.
+			if nativeMemoryWriteTools[lname] {
+				label := firstString(arg, "path", "key", "title", "id", "name")
+				if label == "" {
+					label = lname
+				}
+				writes = append(writes, MemoryWrite{
+					TS: e.TS, Agent: s.Agent, SessionID: s.SessionID, RunID: e.RunID,
+					Tool: name, NotePath: label,
+					Content: clipBytes(firstString(arg, "content", "text", "value", "memory"), 2000),
+				})
+				continue
+			}
 			if pathMatch == "" {
 				continue
 			}

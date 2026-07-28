@@ -107,6 +107,7 @@ const state = {
   agents: [],
   runs: [],
   memory: [],
+  observed: [],
   handoffs: [],
   meta: { ok: true, error: '', badLines: 0, scannedFiles: 0, unreadableFiles: 0 },
   gateway: { status: 'disabled' },
@@ -123,6 +124,11 @@ const state = {
   scopeError: '',
   namespace: '',
   claw: '',
+  // memory wiki
+  wiki: null,          // {pages, sources, edges, counts}
+  wikiExpanded: {},    // page id -> sources revealed
+  wikiPage: null,      // {page, content} being read
+  wikiLoading: false,
 };
 
 // Every data call is scoped to one Claw; the server rejects a request without
@@ -162,6 +168,27 @@ function setQ(patch) {
   location.hash = '#/' + seg.join('/') + (qs ? '?' + qs : '');
 }
 
+async function loadWiki() {
+  if (state.wiki || state.wikiLoading) return;
+  state.wikiLoading = true;
+  try {
+    state.wiki = await getJSON('api/wiki' + scopeQuery());
+  } catch (err) {
+    state.wiki = { pages: [], sources: {}, edges: [], counts: {}, error: String(err.message || err) };
+  }
+  state.wikiLoading = false;
+  render();
+}
+
+async function openWikiPage(path) {
+  try {
+    state.wikiPage = await getJSON('api/wiki/page' + scopeQuery({ path }));
+  } catch (err) {
+    state.wikiPage = { page: { path, title: path }, content: '', error: String(err.message || err) };
+  }
+  render();
+}
+
 function route() {
   const { seg, q } = parseHash();
   const isReplay = seg[0] === 'agents' && seg[2] === 'sessions' && !!seg[3];
@@ -170,7 +197,8 @@ function route() {
     seg, q, isReplay, isAgent,
     isTopology: seg[0] === 'topology',
     isMemory: seg[0] === 'memory',
-    isOverview: !isReplay && !isAgent && seg[0] !== 'topology' && seg[0] !== 'memory',
+    isWiki: seg[0] === 'wiki',
+    isOverview: !isReplay && !isAgent && !['topology', 'memory', 'wiki'].includes(seg[0]),
   };
 }
 
@@ -222,6 +250,7 @@ async function refresh() {
       agents: agents.agents || [],
       runs: runs.runs || [],
       memory: memory.writes || [],
+      observed: memory.observed || [],
       handoffs: handoffs.handoffs || [],
       meta: health.data || state.meta,
       gateway: health.gateway || { status: 'disabled' },
@@ -442,6 +471,7 @@ function renderSidebar(r) {
     ['Overview', '#/', r.isOverview],
     ['Topology', '#/topology', r.isTopology],
     ['Memory', '#/memory', r.isMemory],
+    ['Wiki', '#/wiki', r.isWiki],
   ].map(([label, href, active]) =>
     `<a class="nav-item${active ? ' active' : ''}" href="${href}">${label}</a>`).join('');
 
@@ -957,6 +987,53 @@ function viewTopology() {
 
 function viewMemory() {
   const { q } = route();
+  const tab = q.tab === 'notes' ? 'notes' : 'writes';
+  if (tab === 'writes') return viewMemoryWrites();
+  return viewMemoryNotes();
+}
+
+function memoryTabs(active) {
+  return [['writes', 'Observed writes'], ['notes', 'All notes']].map(([id, label]) =>
+    `<button class="tab${active === id ? ' active' : ''}" data-act="tab" data-tab="${id === 'writes' ? '' : id}">${label}</button>`).join('');
+}
+
+// What actually changed, and when. This is the console's own observation:
+// OpenClaw records nothing about memory writes, so anything before this
+// console started watching is simply not knowable.
+function viewMemoryWrites() {
+  const rows = (state.observed || []).map((e) => {
+    const m = e.agent ? agentMeta(e.agent) : null;
+    const lines = (e.addedLines || []).filter((l) => l.trim());
+    return `<div class="card clip" style="margin-bottom:10px">
+      <div class="mem-group-head" style="cursor:default">
+        <span class="chip" style="background:var(--ok-bg);color:var(--ok)">+${e.added}</span>
+        ${e.removed ? `<span class="chip" style="background:var(--err-bg);color:var(--err)">−${e.removed}</span>` : ''}
+        <span class="mem-path">${esc(e.notePath)}</span>
+        <span class="grow"></span>
+        ${m ? `<span>${m.emoji} ${esc(m.title)}</span>` : '<span style="color:var(--sub)">shared</span>'}
+        <span class="when" title="${esc(exact(e.ts))}">${rel(e.ts, state.now)}</span>
+      </div>
+      ${lines.length ? `<pre class="mono" style="margin:0;padding:10px 16px 14px 42px;white-space:pre-wrap;font-size:12px;line-height:1.55;color:var(--ok)">${lines.map((l) => esc(l)).join('\n')}</pre>` : ''}
+    </div>`;
+  }).join('');
+
+  return `<div class="page narrow">
+    <div class="page-head">
+      <h1>Memory</h1>
+      <span style="color:var(--sub);font-size:13px">what the agents wrote, and when</span>
+    </div>
+    <div class="card clip"><div class="tabs">${memoryTabs('writes')}</div></div>
+    ${rows || `<div class="empty-state"><div class="icon">👁️</div>
+      <h2 class="display">No writes observed yet</h2>
+      <p>OpenClaw records nothing about memory writes, so this console detects them by
+      watching the notes change. It has not seen a change yet — writes that happened before
+      it started watching cannot be recovered. Every note already on disk is under
+      <b>All notes</b>.</p></div>`}
+  </div>`;
+}
+
+function viewMemoryNotes() {
+  const { q } = route();
   const fa = q.agent || '';
   const fp = q.path || '';
   const ws = state.memory.filter((w) => (!fa || w.agent === fa) && (!fp || String(w.notePath).startsWith(fp)));
@@ -997,9 +1074,10 @@ function viewMemory() {
   }).join('');
 
   return `<div class="page narrow">
+    <div class="card clip"><div class="tabs">${memoryTabs('notes')}</div></div>
     <div class="page-head">
-      <h1>Memory vault</h1>
-      <span style="color:var(--sub);font-size:13px">what agents commit to long-term memory, and who wrote it</span>
+      <h1>All notes</h1>
+      <span style="color:var(--sub);font-size:13px">every note on disk, newest first</span>
       <span class="spacer"></span>
       <select class="field" data-act="mem-agent">${agentOptions}</select>
       <input class="field path" data-act="mem-path" placeholder="Filter by path prefix, e.g. memory-map/tasks/" value="${esc(fp)}">
@@ -1008,6 +1086,393 @@ function viewMemory() {
       <h2 class="display">No memory writes found</h2>
       <p>Writes are detected from tool.call events touching <span class="mono">memory-map/**/*.md</span>.
          Adjust the filters or wait for agents to commit notes.</p></div>` : body}
+  </div>`;
+}
+
+
+/* -------------------------------------------------------------- wiki view */
+
+// Memory graph, ported from the Memory UI design: a canvas force simulation
+// you can drag, zoom and pan, with hover dimming everything that is not a
+// neighbour. Positions live in module state so a background refresh does not
+// throw away a layout the user has arranged by hand.
+
+const WIKI_TYPES = {
+  concept:   { color: '#0066cc', label: 'Concept' },
+  entity:    { color: '#009596', label: 'Entity' },
+  synthesis: { color: '#5e40be', label: 'Synthesis' },
+  report:    { color: '#795600', label: 'Report' },
+  index:     { color: '#b8bbbe', label: 'Index' },
+  source:    { color: '#8a8d90', label: 'Source' },
+};
+const wikiType = (t) => WIKI_TYPES[t] || { color: '#8a8d90', label: t || 'Page' };
+
+const sim = {
+  nodes: [], links: [], byId: {},
+  key: '',                       // which claw the layout belongs to
+  view: { ox: 0, oy: 0, scale: 1 },
+  // Repel is higher than the design's default: this graph is mostly
+  // unconnected pages, which have only repulsion to separate them.
+  forces: { center: 0.35, repel: 1.9, linkF: 0.6, linkDist: 95 },
+  showLabels: true, search: '', hidden: {}, hover: null, neigh: new Set(),
+  canvas: null, raf: null, w: 0, h: 0, dpr: 1, drag: {},
+};
+
+// buildSim lays out nodes on a ring as a starting point; the simulation takes
+// over from there. Sources are included only for pages the user expanded.
+function buildSim(w) {
+  const key = state.namespace + '/' + state.claw;
+  const pages = w.pages || [];
+  const wanted = [];
+  pages.forEach((p) => wanted.push(p));
+  Object.keys(state.wikiExpanded).forEach((id) => {
+    const parent = pages.find((p) => p.id === id);
+    if (!parent) return;
+    (parent.sourceIds || []).forEach((sid) => {
+      const src = (w.sources || {})[sid];
+      if (src && !wanted.some((n) => n.id === sid)) wanted.push(src);
+    });
+  });
+
+  const prev = sim.key === key ? sim.byId : {};
+  // Seed on a ring sized to the node count and the measured canvas, so the
+  // simulation starts spread out instead of untangling from a knot.
+  const cx = (sim.w || 900) / 2, cy = (sim.h || 620) / 2;
+  const R = Math.max(160, Math.min(cx, cy) - 60, wanted.length * 11);
+  sim.nodes = wanted.map((p, i) => {
+    const a = (i / Math.max(1, wanted.length)) * Math.PI * 2;
+    const old = prev[p.id];
+    return {
+      id: p.id, path: p.path, type: p.pageType || 'page',
+      label: p.title || p.id,
+      short: (p.title || p.id).length > 26 ? (p.title || p.id).slice(0, 25) + '…' : (p.title || p.id),
+      r: p.pageType === 'source' ? 4.5 : p.pageType === 'index' ? 6
+        : (p.pageType === 'concept' || p.pageType === 'entity') ? 9 : 7,
+      x: old ? old.x : cx + R * Math.cos(a), y: old ? old.y : cy + R * Math.sin(a),
+      vx: 0, vy: 0, fx: null, fy: null,
+    };
+  });
+  sim.byId = {};
+  sim.nodes.forEach((n) => { sim.byId[n.id] = n; });
+
+  sim.links = [];
+  (w.edges || []).forEach((e) => {
+    const a = sim.byId[e.from], b = sim.byId[e.to];
+    if (!a || !b) return;
+    sim.links.push({ a: e.from, b: e.to, sa: a, sb: b, kind: e.kind });
+  });
+  sim.key = key;
+}
+
+function simNeighbours(id) {
+  const set = new Set();
+  sim.links.forEach((l) => {
+    if (l.a === id) set.add(l.b);
+    if (l.b === id) set.add(l.a);
+  });
+  return set;
+}
+
+const simVisible = (n) => !sim.hidden[n.type];
+
+function simStep() {
+  const g = sim.forces, cx = sim.w / 2, cy = sim.h / 2;
+  const ns = sim.nodes;
+  for (let i = 0; i < ns.length; i++) {
+    const a = ns[i];
+    if (!simVisible(a)) continue;
+    for (let j = i + 1; j < ns.length; j++) {
+      const b = ns[j];
+      if (!simVisible(b)) continue;
+      let dx = a.x - b.x, dy = a.y - b.y;
+      const d2 = dx * dx + dy * dy || 0.01, d = Math.sqrt(d2);
+      const f = (g.repel * 1100) / d2, fx = (dx / d) * f, fy = (dy / d) * f;
+      a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+    }
+  }
+  sim.links.forEach((l) => {
+    if (!simVisible(l.sa) || !simVisible(l.sb)) return;
+    const dx = l.sb.x - l.sa.x, dy = l.sb.y - l.sa.y;
+    const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
+    const f = g.linkF * 0.045 * (d - g.linkDist), fx = (dx / d) * f, fy = (dy / d) * f;
+    l.sa.vx += fx; l.sa.vy += fy; l.sb.vx -= fx; l.sb.vy -= fy;
+  });
+  ns.forEach((n) => {
+    if (!simVisible(n)) return;
+    n.vx += (cx - n.x) * g.center * 0.012;
+    n.vy += (cy - n.y) * g.center * 0.012;
+    if (n.fx != null) { n.x = n.fx; n.y = n.fy; n.vx = 0; n.vy = 0; return; }
+    n.vx *= 0.82; n.vy *= 0.82;
+    n.vx = Math.max(-30, Math.min(30, n.vx));
+    n.vy = Math.max(-30, Math.min(30, n.vy));
+    n.x += n.vx; n.y += n.vy;
+  });
+}
+
+function simDraw() {
+  const c = sim.canvas;
+  if (!c) return;
+  const ctx = c.getContext('2d'), dark = state.theme === 'dark';
+  ctx.setTransform(sim.dpr, 0, 0, sim.dpr, 0, 0);
+  ctx.clearRect(0, 0, sim.w, sim.h);
+  const v = sim.view;
+  ctx.save();
+  ctx.translate(v.ox, v.oy);
+  ctx.scale(v.scale, v.scale);
+
+  const q = (sim.search || '').trim().toLowerCase();
+  const match = (n) => !q || (n.label + ' ' + n.type).toLowerCase().includes(q);
+  const anyHL = !!sim.hover || !!q;
+  const lit = (n) => (!sim.hover || n.id === sim.hover || sim.neigh.has(n.id)) && match(n);
+
+  sim.links.forEach((l) => {
+    if (!simVisible(l.sa) || !simVisible(l.sb)) return;
+    const active = (sim.hover && (l.a === sim.hover || l.b === sim.hover)) || (q && match(l.sa) && match(l.sb));
+    const dim = anyHL && !active;
+    ctx.beginPath();
+    ctx.moveTo(l.sa.x, l.sa.y);
+    ctx.lineTo(l.sb.x, l.sb.y);
+    if (l.kind === 'conflict') {
+      ctx.setLineDash([5, 4]);
+      ctx.strokeStyle = dark ? '#ff9085' : '#c9190b';
+    } else {
+      ctx.setLineDash(l.kind === 'source' ? [3, 3] : []);
+      ctx.strokeStyle = active ? (dark ? '#73bcf7' : '#0066cc')
+        : dark ? (dim ? 'rgba(255,255,255,.05)' : 'rgba(255,255,255,.13)')
+               : (dim ? 'rgba(0,0,0,.05)' : 'rgba(0,0,0,.14)');
+    }
+    ctx.lineWidth = (active ? 1.8 : 0.9) / v.scale;
+    ctx.stroke();
+  });
+  ctx.setLineDash([]);
+
+  sim.nodes.forEach((n) => {
+    if (!simVisible(n)) return;
+    const dim = anyHL && !lit(n);
+    ctx.globalAlpha = dim ? 0.22 : 1;
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+    ctx.fillStyle = wikiType(n.type).color;
+    ctx.fill();
+    if (sim.hover === n.id || (q && match(n))) {
+      ctx.lineWidth = 2.5 / v.scale;
+      ctx.strokeStyle = dark ? '#fff' : '#151515';
+      ctx.stroke();
+    }
+    if (sim.showLabels || sim.hover === n.id || sim.neigh.has(n.id)) {
+      ctx.globalAlpha = dim ? 0.3 : 1;
+      ctx.fillStyle = dark ? '#cfd2d4' : '#33373b';
+      ctx.font = '600 11px "Red Hat Text", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText(n.short, n.x, n.y + n.r + 4);
+    }
+  });
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+function simTick() {
+  if (!sim.canvas || !document.body.contains(sim.canvas)) { sim.raf = null; return; }
+  simStep();
+  simDraw();
+  sim.raf = requestAnimationFrame(simTick);
+}
+
+function simResize() {
+  const c = sim.canvas;
+  if (!c) return;
+  const rect = c.getBoundingClientRect();
+  sim.dpr = window.devicePixelRatio || 1;
+  sim.w = rect.width; sim.h = rect.height;
+  c.width = Math.round(rect.width * sim.dpr);
+  c.height = Math.round(rect.height * sim.dpr);
+}
+
+// world converts a pointer position into simulation coordinates.
+function simWorld(e) {
+  const rect = sim.canvas.getBoundingClientRect();
+  const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+  return { sx, sy, x: (sx - sim.view.ox) / sim.view.scale, y: (sy - sim.view.oy) / sim.view.scale };
+}
+
+function simNodeAt(p) {
+  for (let i = sim.nodes.length - 1; i >= 0; i--) {
+    const n = sim.nodes[i];
+    if (!simVisible(n)) continue;
+    const dx = n.x - p.x, dy = n.y - p.y;
+    if (dx * dx + dy * dy <= (n.r + 6) * (n.r + 6)) return n;
+  }
+  return null;
+}
+
+// attachGraph wires the canvas after each render. Positions and view survive,
+// so a refresh never disturbs a layout in progress.
+function attachGraph() {
+  const c = document.getElementById('wiki-canvas');
+  if (!c) return;
+  const isNew = c !== sim.canvas;
+  sim.canvas = c;
+  const hadSize = sim.w > 0;
+  simResize();
+  // The first build runs before the canvas is measured; re-seed once real
+  // dimensions are known so the ring matches the viewport.
+  if (!hadSize && sim.w > 0) { sim.key = ''; if (state.wiki) buildSim(state.wiki); }
+  if (!isNew) { if (!sim.raf) sim.raf = requestAnimationFrame(simTick); return; }
+
+  c.addEventListener('mousedown', (e) => {
+    const p = simWorld(e);
+    const n = simNodeAt(p);
+    sim.drag = { down: true, moved: false, sx: p.sx, sy: p.sy };
+    if (n) { sim.drag.node = n; n.fx = n.x; n.fy = n.y; }
+    else { sim.drag.pan = true; sim.drag.ox = sim.view.ox; sim.drag.oy = sim.view.oy; }
+  });
+  c.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const p = simWorld(e);
+    const next = Math.max(0.25, Math.min(3, sim.view.scale * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
+    // Zoom about the cursor so the point under it stays put.
+    sim.view.ox = p.sx - p.x * next;
+    sim.view.oy = p.sy - p.y * next;
+    sim.view.scale = next;
+  }, { passive: false });
+
+  if (!sim.bound) {
+    sim.bound = true;
+    window.addEventListener('mousemove', (e) => {
+      if (!sim.canvas || !document.body.contains(sim.canvas)) return;
+      const p = simWorld(e);
+      const d = sim.drag;
+      if (d.down) {
+        if (Math.abs(p.sx - d.sx) + Math.abs(p.sy - d.sy) > 3) d.moved = true;
+        if (d.node) { d.node.fx = p.x; d.node.fy = p.y; }
+        else if (d.pan) { sim.view.ox = d.ox + (p.sx - d.sx); sim.view.oy = d.oy + (p.sy - d.sy); }
+        return;
+      }
+      const n = simNodeAt(p);
+      const id = n ? n.id : null;
+      if (id !== sim.hover) {
+        sim.hover = id;
+        sim.neigh = id ? simNeighbours(id) : new Set();
+        sim.canvas.style.cursor = id ? 'pointer' : 'default';
+      }
+    });
+    window.addEventListener('mouseup', () => {
+      const d = sim.drag;
+      if (d.down && d.node) {
+        if (!d.moved) openWikiPage(d.node.path);
+        d.node.fx = null; d.node.fy = null;
+      }
+      sim.drag = {};
+    });
+    window.addEventListener('resize', () => { if (sim.canvas) simResize(); });
+  }
+  if (!sim.raf) sim.raf = requestAnimationFrame(simTick);
+}
+
+function viewWiki() {
+  if (!state.wiki) {
+    loadWiki();
+    return `<div class="page narrow"><h1>Memory graph</h1><div class="loading">Reading the wiki…</div></div>`;
+  }
+  const w = state.wiki;
+  if (w.error) {
+    return `<div class="page narrow"><h1>Memory graph</h1><div class="empty-state"><div class="icon">📚</div>
+      <h2 class="display">Could not read the wiki</h2><p>${esc(w.error)}</p></div></div>`;
+  }
+  if (!(w.pages || []).length) {
+    return `<div class="page narrow"><h1>Memory graph</h1><div class="empty-state"><div class="icon">📚</div>
+      <h2 class="display">Nothing synthesized yet</h2>
+      <p>This wiki holds ${w.counts.source || 0} imported sources but no concepts, entities, or syntheses.
+      Wiki synthesis runs only when an agent is asked to organize what it knows.</p></div></div>`;
+  }
+
+  buildSim(w);
+
+  const legend = Object.keys(WIKI_TYPES).filter((k) => w.counts[k]).map((k) => {
+    const off = !!sim.hidden[k];
+    const t = WIKI_TYPES[k];
+    return `<div class="glegend" data-act="wiki-type" data-type="${k}">
+      <span class="gswatch" style="background:${off ? 'transparent' : t.color};border-color:${t.color}"></span>
+      <span style="flex:1;color:${off ? 'var(--sub)' : 'var(--text)'}">${t.label}</span>
+      <span class="mono" style="font-size:11px;color:var(--sub)">${w.counts[k]}</span>
+    </div>`;
+  }).join('');
+
+  const slider = (act, label, min, max, step, val) => `<label class="gslider">${label}
+    <input type="range" min="${min}" max="${max}" step="${step}" value="${val}" data-act="${act}">
+  </label>`;
+
+  return `<div class="graph-wrap">
+    <div class="graph-canvas-wrap">
+      <canvas id="wiki-canvas"></canvas>
+      <div class="graph-caption">
+        <h1>Memory graph</h1>
+        <p>Every page is a node; links are declared relations and provenance. Drag nodes to rearrange,
+           scroll to zoom, drag the canvas to pan, and click a node to open it.</p>
+      </div>
+      <div class="graph-actions">
+        <button data-act="graph-recenter">Re-center layout</button>
+        <button data-act="graph-reset">Reset zoom</button>
+      </div>
+    </div>
+    <aside class="graph-controls">
+      <div class="gc-head">
+        <span class="display" style="font-weight:700;font-size:15px">Graph controls</span>
+        <span class="mono" style="font-size:11px;color:var(--sub)">${sim.nodes.length}n · ${sim.links.length}e</span>
+      </div>
+      <div class="gc-search">
+        <input placeholder="Highlight nodes…" value="${esc(sim.search)}" data-act="graph-search">
+      </div>
+      <div>
+        <div class="gc-label">Page types · click to filter</div>
+        ${legend}
+      </div>
+      <div>
+        <div class="gc-label">Forces</div>
+        ${slider('gf-center', 'Center force', 0, 1, 0.05, sim.forces.center)}
+        ${slider('gf-repel', 'Repel force', 0.2, 3, 0.1, sim.forces.repel)}
+        ${slider('gf-link', 'Link force', 0, 1.5, 0.05, sim.forces.linkF)}
+        ${slider('gf-dist', 'Link distance', 40, 200, 5, sim.forces.linkDist)}
+      </div>
+      <div>
+        <div class="gc-label">Display</div>
+        <div class="gc-toggle" data-act="graph-labels">
+          <span style="font-size:12.5px;color:var(--sub)">Show labels</span>
+          <span class="toggle${sim.showLabels ? ' on' : ''}"><span class="knob"></span></span>
+        </div>
+        <div class="gc-toggle" data-act="graph-sources" style="margin-top:8px">
+          <span style="font-size:12.5px;color:var(--sub)">Expand all sources</span>
+          <span class="toggle${Object.keys(state.wikiExpanded).length ? ' on' : ''}"><span class="knob"></span></span>
+        </div>
+      </div>
+      ${state.wikiPage ? renderWikiReader() : `<div class="gc-hint">Click a node to read the page.</div>`}
+    </aside>
+  </div>`;
+}
+
+const rel2 = (ts) => rel(ts, state.now);
+
+function renderWikiReader() {
+  const { page, content, error } = state.wikiPage;
+  const t = wikiType(page.pageType);
+  const claims = (page.claims || []).map((c) => `<li style="margin-bottom:6px">
+      ${esc(c.text || c.id || '')}
+      ${c.status ? `<span class="chip" style="background:var(--surface2);color:var(--sub);margin-left:4px">${esc(c.status)}</span>` : ''}
+      ${c.confidence ? `<span class="chip" style="background:var(--info-bg);color:var(--info)">${(c.confidence * 100).toFixed(0)}%</span>` : ''}
+    </li>`).join('');
+  return `<div class="gc-reader">
+    <div class="gc-reader-head">
+      <span class="chip" style="background:var(--surface2);color:${t.color};border:1px solid ${t.color}">${t.label}</span>
+      <span style="flex:1;font-weight:600;font-size:13px">${esc(page.title || page.path)}</span>
+      <button class="link-btn" data-act="wiki-close">close</button>
+    </div>
+    <div class="when" style="margin-bottom:8px">${rel2(page.lastRefreshedAt || page.modifiedAt)}</div>
+    ${error ? `<div class="empty">${esc(error)}</div>` : `
+      ${claims ? `<ul style="margin:0 0 10px;padding-left:16px;font-size:12.5px;line-height:1.5">${claims}</ul>` : ''}
+      <details><summary style="cursor:pointer;color:var(--link);font-size:12px">Page source</summary>
+        <pre class="mono" style="white-space:pre-wrap;font-size:11.5px;line-height:1.5;background:var(--surface2);border:1px solid var(--border-soft);border-radius:6px;padding:8px;margin-top:6px;max-height:280px;overflow:auto">${esc(content || '')}</pre>
+      </details>`}
   </div>`;
 }
 
@@ -1057,6 +1522,8 @@ function render() {
     main = viewTopology();
   } else if (r.isMemory) {
     main = viewMemory();
+  } else if (r.isWiki) {
+    main = viewWiki();
   } else {
     main = viewOverview();
   }
@@ -1074,6 +1541,7 @@ function render() {
     `<div class="body">${renderSidebar(r)}<main class="main" id="main">${main}</main></div>`;
 
   if (r.isReplay && state.follow && isRunningSession(state.session)) scrollToBottom();
+  if (r.isWiki) attachGraph();
 }
 
 function scrollToBottom() {
@@ -1146,6 +1614,36 @@ function onClick(e) {
       state.showResume = false;
       render();
       return scrollToBottom();
+    case 'wiki-type': {
+      const t = el.dataset.type;
+      sim.hidden[t] = !sim.hidden[t];
+      return render();
+    }
+    case 'graph-recenter': {
+      // Unpin everything and let the simulation settle again.
+      sim.nodes.forEach((n) => { n.fx = null; n.fy = null; n.vx = 0; n.vy = 0; });
+      sim.key = '';
+      state.wiki = { ...state.wiki };
+      return render();
+    }
+    case 'graph-reset':
+      sim.view = { ox: 0, oy: 0, scale: 1 };
+      return;
+    case 'graph-labels':
+      sim.showLabels = !sim.showLabels;
+      return render();
+    case 'graph-sources': {
+      const on = Object.keys(state.wikiExpanded).length > 0;
+      state.wikiExpanded = {};
+      if (!on) (state.wiki.pages || []).forEach((pg) => { state.wikiExpanded[pg.id] = true; });
+      sim.key = '';
+      return render();
+    }
+    case 'wiki-open':
+      return openWikiPage(el.dataset.path);
+    case 'wiki-close':
+      state.wikiPage = null;
+      return render();
     case 'topo-range':
       state.topoRange = el.dataset.range;
       state.selEdge = null;
@@ -1173,6 +1671,7 @@ function onChange(e) {
       state.session = null;
       state.sessionKey = '';
       state.agents = []; state.runs = []; state.memory = []; state.handoffs = [];
+      state.wiki = null; state.wikiPage = null; state.wikiExpanded = {};
       state.loaded = false;
       location.hash = '#/?ns=' + encodeURIComponent(ns) + '&claw=' + encodeURIComponent(claw);
       render();
@@ -1184,6 +1683,11 @@ function onChange(e) {
     case 'filter-q': return setQ({ q: el.value });
     case 'mem-agent': return setQ({ agent: el.value });
     case 'mem-path': return setQ({ path: el.value });
+    case 'graph-search': sim.search = el.value; return;
+    case 'gf-center': sim.forces.center = +el.value; return;
+    case 'gf-repel': sim.forces.repel = +el.value; return;
+    case 'gf-link': sim.forces.linkF = +el.value; return;
+    case 'gf-dist': sim.forces.linkDist = +el.value; return;
     default: return;
   }
 }
@@ -1254,6 +1758,10 @@ function start() {
   document.addEventListener('input', (e) => {
     // Debounce free-text filters so each keystroke doesn't rewrite the hash.
     const el = e.target.closest('[data-act]');
+    if (el && ['graph-search', 'gf-center', 'gf-repel', 'gf-link', 'gf-dist'].includes(el.dataset.act)) {
+      onChange(e);
+      return;
+    }
     if (!el || !['filter-q', 'mem-path'].includes(el.dataset.act)) return;
     clearTimeout(el._t);
     el._t = setTimeout(() => onChange(e), 250);
