@@ -988,6 +988,14 @@ function renderEvents(evs) {
 // delegated to go right, agents doing both sit in the middle. Agents with no
 // handoffs at all are parked on their own row so an edge never appears to
 // route through an uninvolved agent.
+// Two layouts, because agent fleets come in two shapes.
+//
+// A pipeline — some agents only delegate, others only receive — reads best
+// left to right in columns. A fleet where everyone talks to everyone has no
+// such order, and the column layout collapsed it: every agent counted as both
+// a source and a sink, so all of them stacked into the middle column on one
+// vertical line with their edges drawn on top of each other. That shape gets a
+// ring, where every pair has a clear line between them.
 function topoLayout(names, edges) {
   const out = new Set(edges.map((e) => e.fromAgent));
   const inn = new Set(edges.map((e) => e.toAgent));
@@ -1000,21 +1008,62 @@ function topoLayout(names, edges) {
     else if (inn.has(n) && !out.has(n)) cols[2].push(n);
     else cols[1].push(n);
   });
-  // With nothing in the middle, pull the outer columns inward so the graph
-  // reads as one connected shape rather than two distant clusters.
-  const xs = cols[1].length ? [130, 340, 550] : [200, 340, 480];
 
-  const graphHeight = isolated.length ? 250 : 380;
   const pos = {};
-  cols.forEach((col, ci) => {
-    const span = graphHeight / (col.length + 1);
-    col.forEach((n, i) => { pos[n] = [xs[ci], Math.round(span * (i + 1))]; });
-  });
+  const ends = cols[0].length + cols[2].length;
+  if (ends === 0 || connected.length > 7) {
+    // No pipeline to read, or too many nodes for three columns.
+    const cx = 340;
+    const cy = isolated.length ? 160 : 185;
+    const R = connected.length <= 2 ? 105 : Math.min(135, 74 + connected.length * 17);
+    connected.forEach((n, i) => {
+      const a = -Math.PI / 2 + (i / connected.length) * Math.PI * 2;
+      pos[n] = [Math.round(cx + R * Math.cos(a)), Math.round(cy + R * Math.sin(a))];
+    });
+  } else {
+    const xs = cols[1].length ? [130, 340, 550] : [200, 340, 480];
+    const graphHeight = isolated.length ? 250 : 380;
+    cols.forEach((col, ci) => {
+      const span = graphHeight / (col.length + 1);
+      col.forEach((n, i) => { pos[n] = [xs[ci], Math.round(span * (i + 1))]; });
+    });
+  }
+
   isolated.forEach((n, i) => {
     const span = 680 / (isolated.length + 1);
-    pos[n] = [Math.round(span * (i + 1)), 320];
+    pos[n] = [Math.round(span * (i + 1)), 330];
   });
   return { pos, isolated: new Set(isolated) };
+}
+
+// edgePath bows each direction of a pair to its own side and stops the line at
+// the node's edge. Drawn centre to centre with a fixed upward bow, A->B and
+// B->A landed on the same curve and the arrowheads hid under the circles.
+function edgePath(x1, y1, x2, y2, count, r1, r2) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const len = Math.hypot(dx, dy) || 1;
+  // The offset is perpendicular to the direction of travel, and that direction
+  // reverses between A->B and B->A, so the two bow to opposite sides on their
+  // own. Signing this by anything else — node name order, say — cancels the
+  // reversal out and puts both curves back on top of each other.
+  const bow = Math.min(52, 24 + count * 4);
+  const cx = (x1 + x2) / 2 - (dy / len) * bow;
+  const cy = (y1 + y2) / 2 + (dx / len) * bow;
+
+  // A quadratic's tangent at an endpoint points along (endpoint - control), so
+  // backing off along it clears the circle without distorting the curve.
+  const trim = (px, py, r) => {
+    const tx = px - cx, ty = py - cy;
+    const tl = Math.hypot(tx, ty) || 1;
+    return [px - (tx / tl) * r, py - (ty / tl) * r];
+  };
+  const [sx, sy] = trim(x1, y1, r1 + 2);
+  const [ex, ey] = trim(x2, y2, r2 + 9);
+  return {
+    d: `M${sx.toFixed(1)} ${sy.toFixed(1)} Q${cx.toFixed(1)} ${cy.toFixed(1)} ${ex.toFixed(1)} ${ey.toFixed(1)}`,
+    // Badge sits on the curve at t=0.5.
+    mx: (x1 + 2 * cx + x2) / 4, my: (y1 + 2 * cy + y2) / 4,
+  };
 }
 
 function viewTopology() {
@@ -1032,6 +1081,7 @@ function viewTopology() {
     (groups[k] = groups[k] || []).push(h);
   });
 
+  const radiusOf = (name) => (isolated.has(name) ? 26 : 36);
   const edgeSvg = [];
   const edgeBadges = [];
   Object.keys(groups).forEach((k) => {
@@ -1039,17 +1089,13 @@ function viewTopology() {
     if (!pos[f] || !pos[t]) return;
     const [x1, y1] = pos[f];
     const [x2, y2] = pos[t];
-    const cx = (x1 + x2) / 2;
-    const cy = (y1 + y2) / 2 - 30;
-    const mx = (x1 + 2 * cx + x2) / 4;
-    const my = (y1 + 2 * cy + y2) / 4;
     const n = groups[k].length;
     const sel = state.selEdge === k;
-    const d = `M${x1} ${y1} Q${cx} ${cy} ${x2} ${y2}`;
+    const { d, mx, my } = edgePath(x1, y1, x2, y2, n, radiusOf(f), radiusOf(t));
     edgeSvg.push(`<g data-act="topo-edge" data-edge="${esc(k)}" style="cursor:pointer">
       <path d="${d}" fill="none" stroke="transparent" stroke-width="18"></path>
       <path d="${d}" fill="none" stroke="${sel ? 'var(--info)' : 'var(--border)'}"
-        stroke-width="${Math.min(6, 1.5 + n * 0.7).toFixed(1)}" marker-end="url(#acArrow)"></path>
+        stroke-width="${Math.min(6, 1.5 + n * 0.5).toFixed(1)}" marker-end="url(#acArrow)"></path>
     </g>`);
     edgeBadges.push(`<button class="topo-edge-badge${sel ? ' on' : ''}" data-act="topo-edge" data-edge="${esc(k)}"
       style="left:${((mx / 680) * 100).toFixed(2)}%;top:${(((my - 14) / 380) * 100).toFixed(2)}%;border:1px solid ${sel ? 'var(--info)' : 'var(--border)'}">${n}</button>`);
@@ -1078,6 +1124,10 @@ function viewTopology() {
   const sel = state.selEdge && groups[state.selEdge];
   const selList = (sel || []).slice().sort((a, b) => ms(b.ts) - ms(a.ts)).map((h) => `<div class="row">
       <span class="when" title="${esc(exact(h.ts))}">${rel(h.ts, state.now)}</span>
+      <span class="chip" style="${h.tool
+        ? 'background:var(--ok-bg);color:var(--ok)' : 'background:var(--warn-bg);color:var(--warn)'}"
+        title="${h.tool ? 'The runtime recorded this message and what carried it.' : 'Inferred from timing, not recorded by the runtime.'}"
+        >${esc(h.tool || 'inferred')}</span>
       <span>${agentMeta(h.fromAgent).emoji} <a class="path" href="#/agents/${encodeURIComponent(h.fromAgent)}/sessions/${encodeURIComponent(h.fromSessionId)}">${esc(h.fromSessionId)}</a></span>
       <span style="color:var(--sub)">→</span>
       <span>${agentMeta(h.toAgent).emoji} <a class="path" href="#/agents/${encodeURIComponent(h.toAgent)}/sessions/${encodeURIComponent(h.toSessionId)}">${esc(h.toSessionId)}</a></span>

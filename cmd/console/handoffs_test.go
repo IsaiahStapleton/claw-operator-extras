@@ -356,3 +356,63 @@ func TestSessionOriginsGroupByAgentTriggerAndKind(t *testing.T) {
 		t.Fatalf("origins are not ordered by size: %+v", origins)
 	}
 }
+
+// The session key a message is stamped with does not have to end in a uuid.
+// Requiring one matched only the coordinator's dashboard sessions and dropped
+// every message an agent sent from its own main session — so a chain of
+// podling -> quill -> stitch rendered as podling talking to each of them and
+// quill talking to nobody.
+func TestHandoffFromANonUUIDSessionKey(t *testing.T) {
+	now := time.Now().UTC()
+	msg := func(from string) string {
+		return "[Inter-session message] sourceSession=agent:" + from + ":main " +
+			"sourceChannel=unknown sourceTool=sessions_send isUser=false\n\nAsk about project state."
+	}
+	quill := sessionOf("quill", "11111111-1111-1111-1111-111111111111",
+		ev("session.started", evOpts{TS: iso(now.Add(-time.Hour))}))
+	// The runtime names quill's session "agent:quill:main"; that is what the
+	// stamp on stitch's prompt refers to.
+	for i := range quill.Events {
+		quill.Events[i].SessionKey = "agent:quill:main"
+	}
+	stitch := sessionOf("stitch", "22222222-2222-2222-2222-222222222222",
+		ev("prompt.submitted", evOpts{TS: iso(now), Data: map[string]any{"prompt": msg("quill")}}))
+
+	edges := findHandoffs([]Session{quill, stitch}, []string{"default", "quill", "stitch"})
+	if len(edges) != 1 {
+		t.Fatalf("edges = %+v, want quill -> stitch", edges)
+	}
+	e := edges[0]
+	if e.FromAgent != "quill" || e.ToAgent != "stitch" {
+		t.Fatalf("edge = %s -> %s, want quill -> stitch", e.FromAgent, e.ToAgent)
+	}
+	// The key resolves back to the session that holds it, so the edge links to
+	// something the reader can open.
+	if e.FromSessionID != "11111111-1111-1111-1111-111111111111" {
+		t.Fatalf("fromSessionId = %q, want quill's session", e.FromSessionID)
+	}
+	if e.Tool != "sessions_send" {
+		t.Fatalf("tool = %q, want the tool that carried it", e.Tool)
+	}
+}
+
+// Two agents exchanging several messages is a different fact from exchanging
+// one, and the topology sizes a link by how many edges it carries.
+func TestEachMessageIsItsOwnEdge(t *testing.T) {
+	now := time.Now().UTC()
+	msg := "[Inter-session message] sourceSession=agent:quill:main sourceTool=sessions_send\n\nping"
+	quill := sessionOf("quill", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+		ev("session.started", evOpts{TS: iso(now.Add(-time.Hour))}))
+	for i := range quill.Events {
+		quill.Events[i].SessionKey = "agent:quill:main"
+	}
+	stitch := sessionOf("stitch", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+		ev("prompt.submitted", evOpts{TS: iso(now), Data: map[string]any{"prompt": msg}}),
+		ev("prompt.submitted", evOpts{TS: iso(now.Add(time.Minute)), Data: map[string]any{"prompt": msg}}),
+		ev("prompt.submitted", evOpts{TS: iso(now.Add(2 * time.Minute)), Data: map[string]any{"prompt": msg}}))
+
+	edges := findHandoffs([]Session{quill, stitch}, []string{"quill", "stitch"})
+	if len(edges) != 3 {
+		t.Fatalf("edges = %d, want one per message", len(edges))
+	}
+}
