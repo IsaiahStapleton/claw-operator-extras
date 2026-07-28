@@ -65,12 +65,11 @@ type server struct {
 	// Local mode: one directory, no cluster.
 	localDir string
 
-	hostname   string
-	gatewayURL string
-	agentMeta  map[string]AgentMeta
-	cacheTTL   time.Duration
-	excluded   []string
-	static     fs.FS
+	hostname  string
+	agentMeta map[string]AgentMeta
+	cacheTTL  time.Duration
+	excluded  []string
+	static    fs.FS
 
 	// stateDir persists what the console has observed. Empty means the record
 	// lives only in memory and is lost on restart.
@@ -138,18 +137,17 @@ func newServer() (*server, error) {
 	}
 
 	s := &server{
-		localDir:   os.Getenv("AGENT_DATA_DIR"),
-		agentsDir:  getenv("CLAW_AGENTS_DIR", defaultAgentsDir),
-		container:  getenv("CLAW_CONTAINER", defaultContainer),
-		hostname:   hostname,
-		gatewayURL: os.Getenv("GATEWAY_URL"),
-		agentMeta:  parseAgentMeta(os.Getenv("AGENT_META")),
-		cacheTTL:   time.Duration(getenvInt("CONSOLE_CACHE_MS", defaultCacheMs)) * time.Millisecond,
-		excluded:   excluded,
-		static:     sub,
-		stateDir:   os.Getenv("CONSOLE_STATE_DIR"),
-		stores:     map[string]*Store{},
-		watchers:   map[string]*memoryWatcher{},
+		localDir:  os.Getenv("AGENT_DATA_DIR"),
+		agentsDir: getenv("CLAW_AGENTS_DIR", defaultAgentsDir),
+		container: getenv("CLAW_CONTAINER", defaultContainer),
+		hostname:  hostname,
+		agentMeta: parseAgentMeta(os.Getenv("AGENT_META")),
+		cacheTTL:  time.Duration(getenvInt("CONSOLE_CACHE_MS", defaultCacheMs)) * time.Millisecond,
+		excluded:  excluded,
+		static:    sub,
+		stateDir:  os.Getenv("CONSOLE_STATE_DIR"),
+		stores:    map[string]*Store{},
+		watchers:  map[string]*memoryWatcher{},
 	}
 	// An unwritable state directory is reported and then ignored: the console
 	// degrades to an in-memory record, which the memory page says outright,

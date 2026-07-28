@@ -376,13 +376,18 @@ func TestHandleMemoryAndHandoffs(t *testing.T) {
 	}
 }
 
-func TestHandleHealthReportsDisabledGatewayExplicitly(t *testing.T) {
-	s := testServer(t, fixtureRoot(t)) // no GATEWAY_URL configured
+func TestHandleHealthReportsDataStatus(t *testing.T) {
+	s := testServer(t, fixtureRoot(t))
 	_, body := getJSON(t, s, "GET", "/api/health", s.handleHealth)
 
-	gw := body["gateway"].(map[string]any)
-	if gw["status"] != "disabled" {
-		t.Fatalf("gateway status = %v, want disabled when no URL is set", gw["status"])
+	// Health is about this console and the data it read, not about a gateway.
+	// A single gateway URL could only ever name one Claw while the console spans
+	// many, so it reported "disabled" forever and was removed.
+	if _, ok := body["gateway"]; ok {
+		t.Fatal("health should not claim to know a gateway's state")
+	}
+	if body["data"].(map[string]any)["ok"] != true {
+		t.Fatalf("data.ok = %v, want true", body["data"])
 	}
 	if body["staleAfterMs"].(float64) != float64(staleAfter.Milliseconds()) {
 		t.Fatalf("staleAfterMs = %v, want %d", body["staleAfterMs"], staleAfter.Milliseconds())

@@ -46,8 +46,18 @@ const maxNoteBytes = 4 << 20
 var safeNotePathRE = regexp.MustCompile(`^[\w.-]+(?:/[\w.-]+)*$`)
 
 // parseNoteIndex turns absolute find output into home-relative notes.
+// parseNoteIndex turns the find output into note records, keeping each file
+// once.
+//
+// The dedupe is load-bearing, not defensive. Agent memory lives at
+// "<home>/<agent>/memory", so the index has to glob "<home>/*/memory" — and
+// that glob also matches "<home>/workspace/memory", which is already listed
+// explicitly as the shared store. find is given both paths and walks the shared
+// store twice, so every daily note arrived twice and the notes tree showed each
+// of them twice. On this Claw that was 448 rows for 328 files.
 func parseNoteIndex(out, home string) []memoryNote {
 	var notes []memoryNote
+	seen := map[string]bool{}
 	prefix := strings.TrimSuffix(home, "/") + "/"
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimRight(line, "\r")
@@ -77,6 +87,10 @@ func parseNoteIndex(out, home string) []memoryNote {
 				ms += f
 			}
 		}
+		if seen[rel] {
+			continue
+		}
+		seen[rel] = true
 		notes = append(notes, memoryNote{Path: rel, Size: size, ModTime: ms})
 	}
 	return notes

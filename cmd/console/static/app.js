@@ -91,8 +91,10 @@ const state = {
   theme: 'light',
   loaded: false,
   now: Date.now(),
-  refreshedAt: 0,
   backendDown: false,
+  clawError: null,
+  runsTotal: 0,
+  runsWanted: 0,
   integrityOpen: false,
   runLimit: 25,
   sortKey: 'time',
@@ -119,10 +121,7 @@ const state = {
   origins: [],
   handoffSessions: 0,
   handoffLinked: 0,
-  meta: { ok: true, error: '', badLines: 0, scannedFiles: 0, unreadableFiles: 0 },
-  gateway: { status: 'disabled' },
-  hostname: '',
-  dataDir: '/data/agents',
+  meta: { ok: true, error: '', badLines: 0, scannedFiles: 0, unreadableFiles: 0, skippedSessions: 0 },
   // replay-scoped
   session: null,
   sessionKey: '',
@@ -238,9 +237,19 @@ function route() {
 
 /* -------------------------------------------------------------- data layer */
 
+// Errors carry the status and whatever the server said. Collapsing them to
+// "HTTP 403" lost the distinction between the console being broken and the
+// reader not being allowed, which are opposite problems with opposite fixes.
 async function getJSON(url) {
   const res = await fetch(url, { headers: { accept: 'application/json' } });
-  if (!res.ok) throw new Error('HTTP ' + res.status);
+  if (!res.ok) {
+    let detail = '';
+    try { detail = (await res.json()).error || ''; } catch { /* not JSON */ }
+    const err = new Error(detail || 'HTTP ' + res.status);
+    err.status = res.status;
+    err.detail = detail;
+    throw err;
+  }
   return res.json();
 }
 
@@ -275,7 +284,7 @@ async function refresh() {
   try {
     const [agents, runs, memory, handoffs, health] = await Promise.all([
       getJSON('api/agents' + scopeQuery()),
-      getJSON('api/runs' + scopeQuery({ limit: 500 })),
+      getJSON('api/runs' + scopeQuery({ limit: state.runsWanted || 500 })),
       getJSON('api/memory' + scopeQuery({ limit: 2000 })),
       getJSON('api/handoffs' + scopeQuery()),
       getJSON('api/health' + scopeQuery()),
@@ -283,6 +292,7 @@ async function refresh() {
     Object.assign(state, {
       agents: agents.agents || [],
       runs: runs.runs || [],
+      runsTotal: runs.total || 0,
       memory: memory.writes || [],
       memoryTotal: memory.total || 0,
       observed: memory.observed || [],
@@ -293,13 +303,21 @@ async function refresh() {
       handoffSessions: handoffs.sessions || 0,
       handoffLinked: handoffs.linked || 0,
       meta: health.data || state.meta,
-      gateway: health.gateway || { status: 'disabled' },
-      hostname: health.hostname || '',
-      backendDown: false, loaded: true, refreshedAt: Date.now(),
+      backendDown: false, clawError: null, loaded: true,
     });
   } catch (err) {
-    state.backendDown = true;
     state.loaded = true;
+    // A 4xx is an answer, not a failure: this Claw has no running pod, or this
+    // user may not exec into it. Reporting either as "backend unreachable"
+    // blamed the console for a condition it had correctly detected, and sent
+    // the reader looking in entirely the wrong place.
+    if (err.status >= 400 && err.status < 500) {
+      state.clawError = { status: err.status, detail: err.detail || String(err.message || '') };
+      state.backendDown = false;
+    } else {
+      state.backendDown = true;
+      state.clawError = null;
+    }
   }
 }
 
@@ -439,16 +457,9 @@ function sparkline(counts) {
 /* ------------------------------------------------------------------ views */
 
 function renderMasthead() {
-  const integ = (state.meta.badLines || 0) + (state.meta.unreadableFiles || 0) + (state.meta.truncatedEvents || 0);
+  const integ = (state.meta.badLines || 0) + (state.meta.unreadableFiles || 0)
+    + (state.meta.truncatedEvents || 0) + (state.meta.skippedSessions || 0);
   const showInteg = state.loaded && integ > 0 && state.meta.ok !== false;
-  const gw = state.gateway.status || 'disabled';
-  const gwDot = gw === 'up' ? '#3d7317' : gw === 'down' ? '#f0561d' : '#6a6e73';
-  const gwLabel = gw === 'up' ? 'Gateway up' : gw === 'down' ? 'Gateway down' : 'Gateway disabled';
-  const gwTip = gw === 'disabled' ? 'GATEWAY_URL unset — health checks disabled' : 'OpenClaw gateway health';
-
-  const refreshed = state.backendDown
-    ? `<span class="masthead-item hide-sm" title="The console cannot reach its backend"><span class="dot sm" style="background:#f0561d"></span>backend unreachable</span>`
-    : `<span class="masthead-item dim hide-sm" title="Polling every 5 s"><span class="dot sm pulse" style="background:#3d7317"></span>refreshed ${rel(state.refreshedAt, state.now)}</span>`;
 
   return `<header class="masthead">
     <a class="brand" href="#/">
@@ -465,10 +476,8 @@ function renderMasthead() {
         <rect x="7.3" y="6" width="1.4" height="4" fill="#151515"></rect>
         <rect x="7.3" y="11" width="1.4" height="1.4" fill="#151515"></rect>
       </svg>${integ}</button>` : ''}
-    <span class="masthead-item hide-sm" title="${esc(gwTip)}"><span class="dot sm" style="background:${gwDot}"></span>${gwLabel}</span>
-    ${refreshed}
     <button class="icon-btn" data-act="theme" title="Toggle light/dark">${state.theme === 'light' ? '☾' : '☀'}</button>
-    <span class="masthead-host">${esc(state.hostname)}</span>
+    <span class="masthead-user">${esc(state.user)}</span>
     ${renderUserMenu()}
     ${state.integrityOpen ? `<div class="popover">
       <h3 class="display">Data integrity</h3>
@@ -477,8 +486,11 @@ function renderMasthead() {
         <span style="color:var(--sub)">Unparseable lines</span><span class="mono" style="color:var(--warn)">${state.meta.badLines || 0}</span>
         <span style="color:var(--sub)">Unreadable files</span><span class="mono" style="color:var(--warn)">${state.meta.unreadableFiles || 0}</span>
         <span style="color:var(--sub)">Truncated events</span><span class="mono" style="color:var(--warn)">${state.meta.truncatedEvents || 0}</span>
+        <span style="color:var(--sub)">Sessions past the cap</span><span class="mono" style="color:var(--warn)">${state.meta.skippedSessions || 0}</span>
       </div>
       <div class="popover-note">Counted, never hidden. Unparseable lines are excluded from every figure here.
+        Sessions past the cap are the oldest beyond the 200 newest per agent; they are not parsed, so
+        their runs are absent from every count on this page.
         Truncated events are ones OpenClaw wrote with their payload dropped for exceeding its size limit —
         their prompts and token counts are missing at the source, not lost by this console.</div>
     </div>` : ''}
@@ -541,7 +553,6 @@ function renderSidebar(r) {
     ${nav}
     <div class="nav-section">AGENTS</div>
     ${agents}
-    <div class="nav-foot">Read-only monitoring surface.<br>Data: <span class="mono">${esc(state.dataDir)}</span></div>
   </nav>`;
 }
 
@@ -570,6 +581,11 @@ function renderToolbar(lockedAgent) {
   const active = !!(q.agent || outcomes.length || q.q || (q.range && q.range !== '7d'));
   const rows = filteredRuns(lockedAgent);
   const scope = state.runs.filter((x) => !lockedAgent || x.agent === lockedAgent).length;
+  // How many runs exist, against how many were fetched. Counting only what was
+  // loaded reported a truncated list as the whole history — and since runs
+  // arrive newest first, the missing ones were the oldest, so "All time" was
+  // quietly not all time.
+  const missing = Math.max(0, (state.runsTotal || 0) - state.runs.length);
 
   return `<div class="toolbar">
     ${agentSelect}
@@ -578,7 +594,11 @@ function renderToolbar(lockedAgent) {
     <select class="field" data-act="filter-range">${ranges}</select>
     ${active ? `<button class="link-btn" data-act="filter-clear">Clear filters</button>` : ''}
     <span class="spacer"></span>
-    <span class="result-count">${rows.length} of ${scope} runs</span>
+    ${missing ? `<span class="result-count" style="color:var(--warn)"
+      title="Runs are fetched newest first, so the ones not loaded are the oldest.">${missing} older
+      run${missing === 1 ? '' : 's'} not loaded</span>
+      <button class="link-btn" data-act="load-all-runs">Load all ${state.runsTotal}</button>` : ''}
+    <span class="result-count">${rows.length} of ${scope} loaded</span>
   </div>`;
 }
 
@@ -883,6 +903,9 @@ function viewSession(agent, sessionId, wantRun) {
         href="${runHref(s.parent.fromAgent, s.parent.fromSessionId, s.parent.fromRunId)}">← spawned by ${esc(agentMeta(s.parent.fromAgent).title)}</a>` : ''}
       ${children}
       <span class="spacer"></span>
+      ${s.total > (s.events || []).length ? `<span class="chip" style="background:var(--warn-bg);color:var(--warn)"
+        title="This session is longer than one page of events. What is shown starts from the beginning of the file.">
+        showing ${(s.events || []).length} of ${s.total} events</span>` : ''}
       <span class="result-count">${isChat
         ? `${(s.events || []).length} messages`
         : `${runs.length} run${runs.length === 1 ? '' : 's'} · ${(s.events || []).length} events${
@@ -1980,6 +2003,8 @@ function render() {
       <p>This console shows the agents of Claws in namespaces you have access to.
       ${state.user ? `You are signed in as <span class="mono">${esc(state.user)}</span> and no Claw` : 'No Claw'}
       is currently visible to you. Ask for access to a namespace that runs one, then reload.</p></div></div>`;
+  } else if (state.clawError) {
+    main = viewClawError();
   } else if (state.backendDown) {
     main = `<div class="page"><div class="empty-state"><div class="icon">🔌</div>
       <h2 class="display">Backend unreachable</h2>
@@ -1988,14 +2013,15 @@ function render() {
   } else if (state.meta.ok === false) {
     main = `<div class="page"><div class="empty-state"><div class="icon">🗂️</div>
       <h2 class="display">No data to show</h2>
-      <p>The data directory could not be read, so this console shows nothing rather than fabricated
-      figures. Check the mount and permissions for <span class="mono">${esc(state.dataDir)}</span>.</p></div></div>`;
+      <p>The agent data could not be read, so this console shows nothing rather than fabricated
+      figures.${state.meta.error ? ` The scan reported: <span class="mono">${esc(state.meta.error)}</span>.` : ''}</p>
+      </div></div>`;
   } else if (state.agents.length === 0) {
     main = `<div class="page"><div class="empty-state"><div class="icon">🗂️</div>
       <h2 class="display">No agent activity yet</h2>
-      <p>This console reads trajectory and transcript JSONL files from
-      <span class="mono">${esc(state.dataDir)}/&lt;agent&gt;/sessions/</span>.
-      Once an agent writes its first session, it appears here automatically.</p></div></div>`;
+      <p>This console reads trajectory and transcript JSONL files from each agent's
+      <span class="mono">sessions/</span> directory inside the Claw. Once an agent writes its first
+      session, it appears here automatically.</p></div></div>`;
   } else if (r.isReplay) {
     main = viewSession(r.seg[1], r.seg[3], r.runId);
   } else if (r.isAgent) {
@@ -2035,6 +2061,44 @@ function render() {
     }
   }
   if (r.isWiki) attachGraph();
+}
+
+// Why this Claw could not be read. Each case is a different problem with a
+// different fix, so each says which it is and what would change it.
+function viewClawError() {
+  const { status, detail } = state.clawError;
+  const where = state.claw ? `<span class="mono">${esc(state.namespace)}/${esc(state.claw)}</span>` : 'this Claw';
+  let icon = '⚠️';
+  let title = 'This Claw could not be read';
+  let body = `<p>The console asked the Kubernetes API about ${where} and was refused.</p>`;
+
+  if (status === 403) {
+    icon = '🔒';
+    title = 'You do not have access to this Claw';
+    body = `<p>${state.user ? `<span class="mono">${esc(state.user)}</span> can` : 'You can'} see ${where}
+      in the picker, but reading its agents needs <span class="mono">create pods/exec</span> in that
+      namespace, and the API server refused it. The console holds no access of its own — every read is
+      made as you — so this is a permission to be granted, not a bug to be worked around.</p>`;
+  } else if (status === 404) {
+    icon = '💤';
+    title = 'No running pod for this Claw';
+    body = `<p>${where} exists, but has no running pod to read from. A Claw that is scaled to zero,
+      still starting, or failing to schedule looks like this. Its history becomes readable again as
+      soon as a pod is.</p>`;
+  } else if (status === 401) {
+    icon = '🔑';
+    title = 'Not signed in';
+    body = `<p>The console did not receive an authenticated identity. Reloading the page will send you
+      back through OpenShift login.</p>`;
+  }
+
+  return `<div class="page"><div class="empty-state">
+    <div class="icon">${icon}</div>
+    <h2 class="display">${title}</h2>
+    ${body}
+    <p class="mono" style="font-size:12px;color:var(--sub)">${esc(detail || 'HTTP ' + status)}</p>
+    <p style="font-size:13px">Pick another Claw from the menu above, or retry — the console keeps polling.</p>
+  </div></div>`;
 }
 
 function scrollToBottom() {
@@ -2084,6 +2148,12 @@ function onClick(e) {
     case 'more':
       state.runLimit += 25;
       return render();
+    case 'load-all-runs':
+      // Opted into explicitly, and kept for this Claw: polling for hundreds of
+      // runs every five seconds is not something to turn on by default.
+      state.runsWanted = Math.max(state.runsTotal, 500);
+      render();
+      return tick();
     case 'filter-outcome': {
       const { q } = route();
       const cur = (q.outcome || '').split(',').filter(Boolean);
@@ -2183,6 +2253,7 @@ function onChange(e) {
       state.session = null;
       state.sessionKey = '';
       state.agents = []; state.runs = []; state.memory = []; state.handoffs = [];
+      state.runsWanted = 0; state.runsTotal = 0; state.clawError = null;
       state.wiki = null; state.wikiPage = null; state.wikiExpanded = {};
       state.loaded = false;
       location.hash = '#/?ns=' + encodeURIComponent(ns) + '&claw=' + encodeURIComponent(claw);

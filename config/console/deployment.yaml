@@ -43,11 +43,6 @@ spec:
             # restart, which the memory page then says outright.
             - name: CONSOLE_STATE_DIR
               value: /var/lib/agent-console
-            # Unset by design: the console then reports gateway health as
-            # "disabled" rather than pretending to know. Point it at the Claw
-            # service to enable the check.
-            # - name: GATEWAY_URL
-            #   value: http://podling:8080
             # Optional display metadata, keyed by agent directory name.
             - name: AGENT_META
               value: |
