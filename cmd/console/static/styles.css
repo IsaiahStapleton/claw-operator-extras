@@ -502,3 +502,18 @@ td.nowrap { white-space: nowrap; }
   .masthead-item.hide-sm, .masthead-host { display: none; }
   .page { padding: 16px 12px 24px; }
 }
+
+/* Scope picker: which Claw this console is reporting on. */
+.scope { display: flex; align-items: center; gap: 8px; margin-left: 4px; }
+.scope-label { font-size: 11px; color: #8a8d90; text-transform: uppercase; letter-spacing: .06em; }
+.scope-select {
+  background: rgba(255, 255, 255, .08);
+  color: #fff;
+  border: 1px solid #3c3f42;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 13px;
+  max-width: 280px;
+}
+.scope-select:hover { background: rgba(255, 255, 255, .16); }
+.scope-select option { background: #212428; color: #e0e0e0; }

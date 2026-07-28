@@ -25,14 +25,16 @@ import (
 	"time"
 )
 
-// testServer wires a server over a fixture data dir with no snapshot caching.
+// testServer wires a server in local-directory mode over a fixture tree, with
+// no snapshot caching so each request re-reads.
 func testServer(t *testing.T, root string) *server {
 	t.Helper()
 	return &server{
-		store:     newStore(root, 0, nil),
+		localDir:  root,
 		hostname:  "test-host",
-		dataDir:   root,
+		cacheTTL:  0,
 		agentMeta: map[string]AgentMeta{"main": {Emoji: "🌱", Title: "Podling", Desc: "Coordinator"}},
+		stores:    map[string]*Store{},
 	}
 }
 

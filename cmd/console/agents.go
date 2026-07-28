@@ -106,7 +106,7 @@ func (s *server) buildAgentViews(snap *Snapshot, now time.Time) []AgentView {
 			switch latest.Outcome {
 			case "running":
 				status = "active"
-				if step := s.currentStep(name, latest); step != "" {
+				if step := lastEventOfRun(snap, name, latest); step != "" {
 					currentStep = &step
 				}
 			case "stale":
@@ -144,17 +144,9 @@ func (s *server) buildAgentViews(snap *Snapshot, now time.Time) []AgentView {
 	return views
 }
 
-// currentStep resolves the last event of the currently-running run, mirroring
-// the Node server's offset-safe lookup for multi-run sessions.
-func (s *server) currentStep(agent string, latest *Run) string {
-	detail := s.store.sessionEvents(agent, latest.SessionID, 0, 1000)
-	if detail == nil {
-		return ""
-	}
-	for i := len(detail.Events) - 1; i >= 0; i-- {
-		if detail.Events[i].RunID == latest.RunID {
-			return eventSummary(detail.Events[i])
-		}
-	}
-	return ""
+// lastEventOfRun reports what a running run is doing. The summary is captured
+// when the run is derived, so neither the full event list nor another read of
+// the session is needed here.
+func lastEventOfRun(_ *Snapshot, _ string, latest *Run) string {
+	return latest.CurrentStep
 }

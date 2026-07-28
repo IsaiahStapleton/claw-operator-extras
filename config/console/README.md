@@ -1,109 +1,96 @@
 # Agent Console manifests
 
-Deploys the Agent Console (`cmd/console`) behind an OpenShift OAuth proxy, with
-the Claw home PVC mounted read-only.
-
-## Prerequisites
-
-A Claw instance already running in the target namespace, since the console
-reads its home volume. The defaults here target a Claw named `podling` with the
-PVC `podling-home-pvc`.
+Deploys the Agent Console: one console you log into that shows the agents of
+every Claw in namespaces you have access to.
 
 ## Install
 
-```sh
-oc new-project isaiah-claw    # or your existing Claw namespace
+The console runs in its own namespace, not in a Claw's.
 
-# The oauth-proxy needs a session secret.
+```sh
+oc new-project agent-console
+
+# The oauth-proxy signs its browser session cookie with this key, and will not
+# start without it. It is a credential, so it is created here rather than
+# checked in. oauth-proxy base64-decodes the value and uses it as an AES key,
+# so it must decode to 16, 24, or 32 bytes — 24 here, matching the deployer's
+# own openclaw-deployer-cookie.
 oc create secret generic agent-console-cookie \
-  --from-literal=session_secret="$(head -c 32 /dev/urandom | base64)"
+  --from-literal=session_secret="$(head -c 24 /dev/urandom | base64)"
 
 oc apply -k config/console
+oc get route agent-console -o jsonpath='{.spec.host}{"\n"}'
 ```
 
-Then open the route:
+If the `oauth-proxy` container crash-loops on startup, this secret is the first
+thing to check: a value that does not decode to a valid AES key length fails
+there rather than at apply time.
 
-```sh
-oc get route agent-console -o jsonpath='{.spec.host}'
-```
+## How access works
 
-## The ReadWriteOnce constraint
+The console holds **no standing permission to read any Claw's data**. It has
+one privilege: impersonating the logged-in user. Every Kubernetes call — both
+listing Claws and reading session files — is made as that user, so the API
+server decides what they see.
 
-**This is the one thing that will bite you.** Claw home PVCs are provisioned
-`ReadWriteOnce` on EBS (`gp3`). An EBS volume attaches to exactly one node at a
-time, so a console pod scheduled onto a different node than the Claw pod will
-sit `Pending` forever with a multi-attach error.
+That matters because agent transcripts contain whatever the agent saw,
+including tool output. Enforcing in the API server rather than filtering in
+application code means a bug in this console cannot leak one tenant's
+transcripts to another.
 
-Multiple pods *may* share an RWO volume when they are on the **same node**, so
-`deployment.yaml` pins the console to the Claw pod with a required
-`podAffinity` on `topologyKey: kubernetes.io/hostname`. Consequences:
+In practice a user sees a Claw's agents when they can:
 
-- If the Claw pod moves to another node, the console must be rescheduled to
-  follow it. `kubectl rollout restart deploy/agent-console` is enough.
-- If the Claw pod is scaled to zero, the affinity has nothing to match and the
-  console stays `Pending`. That is expected — there is no data to read.
+- `list` Claws (populates the picker), and
+- `create pods/exec` in that namespace (reads the session files).
 
-If the cluster later offers an RWX storage class (EFS, ODF), drop the affinity
-block and mount the volume directly.
+Exec is the effective bar. A user with view-only access to a namespace will
+see the Claw in the picker but get a permission error opening it. If that is
+the wrong bar for your users, the data path is behind an interface — see the
+gateway-API note in the repo README.
 
-## The UID constraint
+## Why exec rather than mounting the volumes
 
-The second thing that will bite you. OpenClaw writes session files as mode
-`0600` inside a `0700` `sessions/` directory, owned by the UID the Claw runs
-as. That restriction is deliberate and audited, so **do not loosen it** to make
-the console work. Group permissions are not enough either — the mode bits give
-the group nothing.
+Claw home PVCs are ReadWriteOnce. A volume attaches to one node at a time, so
+a single console pod cannot mount the volumes of the many Claws it reports on
+— it would have to be scheduled onto every node at once. Reading through the
+Kubernetes exec API removes the storage coupling entirely: any number of
+Claws, in any namespace, on any node.
 
-The console therefore has to run as the *same UID* as the Claw pod. Both
-Deployments omit `runAsUser`, so `restricted-v2` assigns each the first UID in
-the namespace's `openshift.io/sa.scc.uid-range` annotation and they match
-automatically. Check the range with:
+The console never writes. Only `GET` routes exist, and the commands it runs in
+a Claw pod are `find`, `tar`, and `cat`.
 
-```sh
-oc get ns <namespace> -o jsonpath='{.metadata.annotations.openshift\.io/sa\.scc\.uid-range}{"\n"}'
-```
+## Performance
 
-If the Claw is pinned to an explicit `runAsUser`, pin the console to the same
-value. Confirm they agree:
+A refresh is one `find` to index the sessions, then one `tar` carrying every
+file that changed since the last refresh. Batching matters: reading files one
+at a time turned a cold scan of ~250 files into a 60-second round-trip storm,
+while a single streamed tar does it in about 7 seconds. Parsed sessions are
+cached by size and mtime, so once warm a refresh is well under a second —
+session files are append-only, and most never change again.
 
-```sh
-oc exec deploy/agent-console -c app -- id
-oc exec deploy/podling -c gateway -- id
-```
-
-A mismatch does not crash anything — it shows up as a large **unreadable files**
-count in the console's masthead integrity badge, with few or no agents listed.
-That is the honesty machinery working as intended, but it means you are seeing
-nothing rather than everything.
-
-## Pointing at a different Claw
-
-The affinity selector, PVC name, and agent metadata all name `podling`. For a
-different instance, patch the three of them:
-
-```sh
-oc patch deploy agent-console --type=json -p='[
-  {"op":"replace","path":"/spec/template/spec/affinity/podAffinity/requiredDuringSchedulingIgnoredDuringExecution/0/labelSelector/matchLabels/claw.sandbox.redhat.com~1instance","value":"my-claw"},
-  {"op":"replace","path":"/spec/template/spec/volumes/0/persistentVolumeClaim/claimName","value":"my-claw-home-pvc"}
-]'
-```
+`CONSOLE_CACHE_MS` bounds how often a refresh may re-index. Sessions past
+`maxSessionsPerAgent` (200, newest first) are skipped and counted rather than
+silently dropped.
 
 ## Configuration
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `AGENT_DATA_DIR` | `/data/agents` | Root scanned for `<agent>/sessions/*.jsonl` |
 | `LISTEN_ADDR` | `:8080` | Bind address |
+| `CLAW_AGENTS_DIR` | `/home/node/.openclaw/agents` | Where agent state lives inside a Claw pod |
+| `CLAW_CONTAINER` | `gateway` | Container in the Claw pod holding that state |
+| `AGENT_DATA_DIR` | unset | Setting it switches to local single-directory mode (development); leave unset in the cluster |
 | `GATEWAY_URL` | unset | Claw gateway to health-check. Unset reports "disabled" rather than guessing. |
 | `EXCLUDED_AGENTS` | unset | Comma-separated agent directories to hide |
 | `AGENT_META` | unset | JSON map of `{agent: {emoji, title, desc}}` for display |
-| `CONSOLE_CACHE_MS` | `2000` | Directory-scan cache window |
+| `CONSOLE_CACHE_MS` | `2000` | Minimum interval between re-indexes |
 
-## Security posture
+## A note on agent backends
 
-- The server defines only `GET` routes; there is no mutating handler.
-- The data volume is mounted `readOnly: true` and the container runs with a
-  read-only root filesystem as an arbitrary non-root UID (restricted-v2).
-- All traffic goes through the oauth-proxy sidecar; only `/healthz` skips auth
-  so the kubelet can probe it. `/metrics` sits behind auth — scrape it via the
-  in-cluster service on port 8080 rather than the route.
+Claws run different agent backends, and not all store sessions the way this
+console parses. A Codex-backed Claw, for instance, writes
+`<agent>/agent/codex-home/sessions/YYYY/MM/DD/rollout-*.jsonl` rather than
+`<agent>/sessions/<id>.trajectory.jsonl`. Those agents are still listed, with
+zero runs — the agent exists, and saying so is more honest than omitting it.
+Adding a reader for other backends is a contained change behind the same
+source interface.

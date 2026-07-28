@@ -21,10 +21,11 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
+
 	"regexp"
 	"sort"
 	"strings"
@@ -54,11 +55,37 @@ type Snapshot struct {
 	// TruncatedEvents counts events whose payload the runtime dropped for
 	// exceeding the trajectory size limit. Surfaced, never silently absorbed.
 	TruncatedEvents int
+	// SkippedSessions counts sessions past the per-agent cap. Reading is a
+	// round trip into a pod, so old sessions are bounded — but the UI says how
+	// many were left out rather than presenting a partial view as complete.
+	SkippedSessions int
 }
 
-// Store scans the agent data directory and caches the result briefly.
+const (
+	// scanTimeout bounds one refresh. Exec round trips can hang on a pod that
+	// is being rescheduled; the console reports staleness instead of wedging.
+	scanTimeout = 60 * time.Second
+	// maxSessionsPerAgent caps how many of an agent's newest sessions are
+	// parsed per refresh.
+	maxSessionsPerAgent = 200
+)
+
+// parsedSession is one session file already parsed, retained so an
+// append-only file is not re-read on every refresh. Reads may be round trips
+// into a pod, so the identity check (size + mtime) is what keeps the console
+// cheap once it is warm.
+type parsedSession struct {
+	size      int64
+	modTime   int64
+	events    []Event // filtered: only what the cross-session analyses need
+	runs      []Run   // derived while the full events were still in hand
+	badLines  int
+	truncated int
+}
+
+// Store turns a sessionSource into cached snapshots.
 type Store struct {
-	dataDir  string
+	source   sessionSource
 	cacheTTL time.Duration
 	excluded map[string]bool
 	now      func() time.Time
@@ -66,16 +93,24 @@ type Store struct {
 	mu      sync.Mutex
 	cached  *Snapshot
 	cachedT time.Time
+	parsed  map[string]parsedSession // "<agent>/<file>" -> parsed content
 }
 
-func newStore(dataDir string, cacheTTL time.Duration, excludeAgents []string) *Store {
+func newStoreFromSource(src sessionSource, cacheTTL time.Duration, excludeAgents []string) *Store {
 	ex := map[string]bool{}
 	for _, a := range excludeAgents {
 		if a = strings.TrimSpace(a); a != "" {
 			ex[a] = true
 		}
 	}
-	return &Store{dataDir: dataDir, cacheTTL: cacheTTL, excluded: ex, now: time.Now}
+	return &Store{source: src, cacheTTL: cacheTTL, excluded: ex, now: time.Now,
+		parsed: map[string]parsedSession{}}
+}
+
+// newStore keeps the local-directory constructor the tests and
+// `make console-run-local` use.
+func newStore(dataDir string, cacheTTL time.Duration, excludeAgents []string) *Store {
+	return newStoreFromSource(dirSource{root: dataDir}, cacheTTL, excludeAgents)
 }
 
 func (s *Store) snapshot() *Snapshot {
@@ -90,99 +125,184 @@ func (s *Store) snapshot() *Snapshot {
 }
 
 func (s *Store) scan() *Snapshot {
+	ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
+	defer cancel()
+
 	snap := &Snapshot{OK: true, Activity: map[string]int64{}}
-	entries, err := os.ReadDir(s.dataDir)
+	agentDirs, files, err := s.source.index(ctx)
 	if err != nil {
 		snap.OK = false
-		snap.Error = "data dir unreadable: " + errCode(err)
+		snap.Error = "agent data unreadable: " + errCode(err)
 		return snap
 	}
 	now := s.now()
-	for _, dirent := range entries {
-		if !dirent.IsDir() {
+
+	// Group the flat index by agent so each agent is summarized independently.
+	// Agents with no readable sessions still appear: a Claw may run a backend
+	// whose on-disk layout this console does not parse, and reporting the
+	// agent with zero runs is truthful where omitting it is not.
+	byAgent := map[string][]sessionFile{}
+	for _, name := range agentDirs {
+		if s.excluded[name] {
 			continue
 		}
-		agent := dirent.Name()
-		if s.excluded[agent] {
+		byAgent[name] = nil
+	}
+	for _, f := range files {
+		if s.excluded[f.Agent] {
 			continue
 		}
-		sessDir := filepath.Join(s.dataDir, agent, "sessions")
-		sessEntries, err := os.ReadDir(sessDir)
-		if err != nil {
-			continue // an agent dir without sessions/ is not an error
-		}
+		byAgent[f.Agent] = append(byAgent[f.Agent], f)
+	}
+
+	// First pass: decide which files this refresh must actually read. Reads may
+	// be round trips into a pod, so they are gathered and issued as one batch
+	// rather than one at a time.
+	fresh := map[string]bool{}
+	var toFetch []sessionFile
+	plan := map[string][]sessionFile{} // agent -> trajectories to parse
+	transcriptsFor := map[string]map[string]sessionFile{}
+
+	for agent, entries := range byAgent {
 		snap.Agents = append(snap.Agents, agent)
 
 		// Transcript mtimes are the backend-agnostic activity signal:
-		// CLI-harness backends don't emit trajectory sidecars, so
-		// trajectories alone undercount agents that are alive.
-		// sessions.json is deliberately excluded — the gateway sweeps every
-		// registered agent's store at once, which is not agent activity.
+		// CLI-harness backends emit no trajectory sidecar, so trajectories
+		// alone undercount agents that are alive. sessions.json is excluded —
+		// the gateway sweeps every registered agent's store at once, which is
+		// not activity by this agent.
 		var lastActivity int64
 		trajectoryIDs := map[string]bool{}
-		for _, f := range sessEntries {
-			name := f.Name()
-			if !strings.HasSuffix(name, ".jsonl") || strings.HasSuffix(name, ".trajectory.jsonl") {
-				continue
-			}
-			if info, err := f.Info(); err == nil {
-				if m := info.ModTime().UnixMilli(); m > lastActivity {
-					lastActivity = m
+		transcripts := map[string]sessionFile{}
+		var trajectories []sessionFile
+		for _, f := range entries {
+			switch {
+			case strings.HasSuffix(f.Name, ".trajectory.jsonl"):
+				trajectoryIDs[strings.TrimSuffix(f.Name, ".trajectory.jsonl")] = true
+				trajectories = append(trajectories, f)
+			case f.Name == "sessions.json" || !strings.HasSuffix(f.Name, ".jsonl"):
+				// not a session record
+			default:
+				transcripts[strings.TrimSuffix(f.Name, ".jsonl")] = f
+				if f.ModTime > lastActivity {
+					lastActivity = f.ModTime
 				}
 			}
 		}
 		snap.Activity[agent] = lastActivity
 
-		for _, f := range sessEntries {
-			name := f.Name()
-			if !strings.HasSuffix(name, ".trajectory.jsonl") {
+		// Newest first, so a cap keeps the sessions that matter.
+		sort.SliceStable(trajectories, func(i, j int) bool {
+			return trajectories[i].ModTime > trajectories[j].ModTime
+		})
+		if len(trajectories) > maxSessionsPerAgent {
+			snap.SkippedSessions += len(trajectories) - maxSessionsPerAgent
+			trajectories = trajectories[:maxSessionsPerAgent]
+		}
+
+		plan[agent] = trajectories
+		transcriptsFor[agent] = transcripts
+
+		for _, f := range trajectories {
+			key := batchKey(agent, f.Name)
+			fresh[key] = true
+			if cached, ok := s.parsed[key]; !ok || cached.size != f.Size || cached.modTime != f.ModTime {
+				toFetch = append(toFetch, f)
+			}
+		}
+		// Transcripts are needed for sessions with no trajectory at all, and
+		// for recovering prompts the trajectory truncated.
+		for sessionID, f := range transcripts {
+			if !trajectoryIDs[sessionID] {
+				toFetch = append(toFetch, f)
 				continue
 			}
-			sessionID := strings.TrimSuffix(name, ".trajectory.jsonl")
-			trajectoryIDs[sessionID] = true
-			text, err := os.ReadFile(filepath.Join(sessDir, name))
-			if err != nil {
-				snap.UnreadableFiles++
-				continue
-			}
-			snap.ScannedFiles++
-			events, bad := parseTrajectory(string(text))
-			snap.BadLines += bad
-			for _, e := range events {
-				if isTruncated(e) {
-					snap.TruncatedEvents++
+			if cached, ok := s.parsed[batchKey(agent, sessionID+".trajectory.jsonl")]; ok {
+				if hasTruncatedPrompt(cached.events) {
+					toFetch = append(toFetch, f)
 				}
+			} else {
+				toFetch = append(toFetch, f) // unparsed yet; may need recovery
 			}
-			snap.Sessions = append(snap.Sessions, Session{Agent: agent, SessionID: sessionID, Events: events})
-			runs := deriveRuns(agent, sessionID, events, now)
+		}
+	}
+
+	bodies, err := s.source.readMany(ctx, toFetch)
+	if err != nil && len(bodies) == 0 {
+		snap.OK = false
+		snap.Error = "agent data unreadable: " + errCode(err)
+		return snap
+	}
+
+	for agent, trajectories := range plan {
+		transcripts := transcriptsFor[agent]
+		for _, f := range trajectories {
+			sessionID := strings.TrimSuffix(f.Name, ".trajectory.jsonl")
+			key := batchKey(agent, f.Name)
+
+			cached, ok := s.parsed[key]
+			if !ok || cached.size != f.Size || cached.modTime != f.ModTime {
+				text, got := bodies[key]
+				if !got {
+					snap.UnreadableFiles++
+					continue
+				}
+				events, bad := parseTrajectory(string(text))
+				truncated := 0
+				for _, e := range events {
+					if isTruncated(e) {
+						truncated++
+					}
+				}
+				cached = parsedSession{size: f.Size, modTime: f.ModTime,
+					events: retainForAnalysis(events), badLines: bad, truncated: truncated,
+					runs: deriveRuns(agent, sessionID, events, now)}
+				s.parsed[key] = cached
+			}
+
+			snap.ScannedFiles++
+			snap.BadLines += cached.badLines
+			snap.TruncatedEvents += cached.truncated
+			snap.Sessions = append(snap.Sessions, Session{Agent: agent, SessionID: sessionID, Events: cached.events})
+
+			runs := append([]Run(nil), cached.runs...)
 			// A prompt the runtime dropped for size often survives in the
 			// plain transcript, which is written separately and is not
 			// subject to the trajectory event limit.
-			recoverTruncatedPrompts(filepath.Join(sessDir, sessionID+".jsonl"), runs)
+			if t, ok := transcripts[sessionID]; ok && needsPromptRecovery(runs) {
+				if body, got := bodies[batchKey(agent, t.Name)]; got {
+					applyTranscriptPrompts(readUserMessagesFrom(body), runs)
+				}
+			}
 			snap.Runs = append(snap.Runs, runs...)
 		}
 
-		// Plain transcripts without a trajectory sidecar are sessions from
+		// Plain transcripts with no trajectory sidecar are sessions from
 		// CLI-harness backends; derive a lightweight run for each.
-		for _, f := range sessEntries {
-			name := f.Name()
-			if !strings.HasSuffix(name, ".jsonl") || strings.HasSuffix(name, ".trajectory.jsonl") || name == "sessions.json" {
+		for sessionID, f := range transcripts {
+			if _, hasTrajectory := s.parsed[batchKey(agent, sessionID+".trajectory.jsonl")]; hasTrajectory {
 				continue
 			}
-			sessionID := strings.TrimSuffix(name, ".jsonl")
-			if trajectoryIDs[sessionID] {
-				continue
-			}
-			text, err := os.ReadFile(filepath.Join(sessDir, name))
-			if err != nil {
+			body, got := bodies[batchKey(agent, f.Name)]
+			if !got {
 				continue
 			}
 			snap.ScannedFiles++
-			if run, ok := deriveTranscriptRun(agent, sessionID, string(text)); ok {
+			if run, ok := deriveTranscriptRun(agent, sessionID, string(body)); ok {
 				snap.Runs = append(snap.Runs, run)
 			}
 		}
 	}
+
+	// Drop cache entries for files that no longer exist so a long-lived
+	// console does not grow without bound.
+	for key := range s.parsed {
+		if !fresh[key] {
+			delete(s.parsed, key)
+		}
+	}
+
+	sort.Strings(snap.Agents)
 	sort.SliceStable(snap.Runs, func(i, j int) bool {
 		return tsMillis(snap.Runs[i].StartedAt) > tsMillis(snap.Runs[j].StartedAt)
 	})
@@ -205,18 +325,29 @@ type userMessage struct {
 // limit, reading them from the session's plain transcript and matching by
 // timestamp. Runs keep the truncation marker when nothing matches, so a miss
 // degrades to the honest message rather than to a wrong prompt.
-func recoverTruncatedPrompts(transcriptPath string, runs []Run) {
-	need := false
-	for i := range runs {
-		if runs[i].PromptTruncated {
-			need = true
-			break
+// hasTruncatedPrompt reports whether a cached session contains a prompt the
+// runtime dropped, which is what makes its transcript worth fetching.
+func hasTruncatedPrompt(events []Event) bool {
+	for _, e := range events {
+		if e.Type == "prompt.submitted" && isTruncated(e) {
+			return true
 		}
 	}
-	if !need {
-		return // do not touch the filesystem for sessions that are intact
+	return false
+}
+
+func needsPromptRecovery(runs []Run) bool {
+	for i := range runs {
+		if runs[i].PromptTruncated {
+			return true
+		}
 	}
-	msgs := readUserMessages(transcriptPath)
+	return false
+}
+
+// applyTranscriptPrompts fills in prompts the trajectory lost, matching each
+// truncated run to the transcript message closest to it in time.
+func applyTranscriptPrompts(msgs []userMessage, runs []Run) {
 	if len(msgs) == 0 {
 		return
 	}
@@ -260,6 +391,10 @@ func readUserMessages(path string) []userMessage {
 	if err != nil {
 		return nil
 	}
+	return readUserMessagesFrom(text)
+}
+
+func readUserMessagesFrom(text []byte) []userMessage {
 	var out []userMessage
 	for _, raw := range strings.Split(string(text), "\n") {
 		line := strings.TrimSpace(raw)
@@ -465,25 +600,20 @@ func (s *Store) sessionTranscript(agent, sessionID string, offset, limit int) ([
 	return slicePage(messages, offset, limit), len(messages), true
 }
 
-// readSessionFile validates names against path traversal and reads the file.
+// readSessionFile reads one session file through the source. Name validation
+// lives in each source implementation, since what counts as an escape differs
+// between a filesystem path and an exec argument.
 func (s *Store) readSessionFile(agent, sessionID, suffix string) (string, bool) {
 	if !safeNameRE.MatchString(agent) || !safeNameRE.MatchString(sessionID) {
 		return "", false
 	}
-	file := filepath.Join(s.dataDir, agent, "sessions", sessionID+suffix)
-	root, err := filepath.Abs(s.dataDir)
+	ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
+	defer cancel()
+	body, err := s.source.read(ctx, agent, sessionID+suffix)
 	if err != nil {
 		return "", false
 	}
-	abs, err := filepath.Abs(file)
-	if err != nil || !strings.HasPrefix(abs, root+string(filepath.Separator)) {
-		return "", false
-	}
-	text, err := os.ReadFile(file)
-	if err != nil {
-		return "", false
-	}
-	return string(text), true
+	return string(body), true
 }
 
 func slicePage[T any](items []T, offset, limit int) []T {
