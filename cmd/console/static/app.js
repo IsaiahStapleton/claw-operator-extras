@@ -116,6 +116,9 @@ const state = {
   watchingSince: '',
   memPersistent: false,
   handoffs: [],
+  origins: [],
+  handoffSessions: 0,
+  handoffLinked: 0,
   meta: { ok: true, error: '', badLines: 0, scannedFiles: 0, unreadableFiles: 0 },
   gateway: { status: 'disabled' },
   hostname: '',
@@ -286,6 +289,9 @@ async function refresh() {
       watchingSince: memory.watchingSince || '',
       memPersistent: !!memory.persistent,
       handoffs: handoffs.handoffs || [],
+      origins: handoffs.origins || [],
+      handoffSessions: handoffs.sessions || 0,
+      handoffLinked: handoffs.linked || 0,
       meta: health.data || state.meta,
       gateway: health.gateway || { status: 'disabled' },
       hostname: health.hostname || '',
@@ -606,7 +612,7 @@ function renderRunsTable(lockedAgent) {
   }).join('');
 
   return `${renderToolbar(lockedAgent)}
-    <div class="table-scroll"><table>
+    <div class="table-scroll" data-scroll-key="runs-table"><table>
       <thead><tr>
         <th><button class="sort-btn" data-act="sort" data-key="time">Started${arrow('time')}</button></th>
         ${lockedAgent ? '' : '<th>Agent</th>'}
@@ -972,7 +978,7 @@ function renderEvents(evs) {
         <span class="summary${isErr ? ' err' : ''}">${esc(summary)}</span>
         <span class="caret">${open ? '▾' : '▸'}</span>
       </div>
-      ${open ? `<pre>${esc(JSON.stringify(e.data || {}, null, 2))}</pre>` : ''}
+      ${open ? `<pre data-scroll-key="ev:${esc(key)}">${esc(JSON.stringify(e.data || {}, null, 2))}</pre>` : ''}
     </div>`;
   }).join('');
   return `<div class="events" style="padding:4px 8px 6px">${rows}</div>`;
@@ -1101,6 +1107,50 @@ function viewTopology() {
       <div class="section-head">${sel ? esc(state.selEdge.replace('→', ' → ')) + ` · ${sel.length} handoffs (${state.topoRange})` : 'Handoff events'}</div>
       ${sel ? selList : `<div class="section-hint">Click an edge to list the underlying handoff events. Click a node to open that agent.</div>`}
     </div>`}
+    ${renderOrigins()}
+  </div>`;
+}
+
+// What the topology can and cannot see, and where the work actually comes from.
+//
+// An edge exists only where OpenClaw stamped a parent onto the delegated
+// prompt, which it does on one delivery path. On a real fleet that produced two
+// edges against 239 sessions — not because the agents do not collaborate, but
+// because nothing recorded it. Saying so, and showing the triggers the runtime
+// does record, beats a graph that quietly implies it knows the whole story.
+const TRIGGERS = {
+  user: 'started by a user or an API call',
+  cron: 'fired by a schedule',
+  heartbeat: 'periodic wake-up',
+  memory: 'memory maintenance',
+  unrecorded: 'no trigger recorded',
+};
+
+function renderOrigins() {
+  const origins = state.origins || [];
+  if (!origins.length) return '';
+  const linked = state.handoffLinked || 0;
+  const sessions = state.handoffSessions || 0;
+  const rows = origins.map((o) => {
+    const m = agentMeta(o.agent);
+    return `<div class="row">
+      <span class="nowrap">${m.emoji} <a href="#/agents/${encodeURIComponent(o.agent)}">${esc(m.title)}</a></span>
+      <span class="chip" style="background:var(--surface2);color:var(--sub)">${esc(o.trigger)}</span>
+      <span style="color:var(--sub);font-size:12px">${esc(TRIGGERS[o.trigger] || 'trigger recorded by the runtime')}</span>
+      ${o.kind && o.kind !== 'unknown'
+        ? `<span class="chip" style="background:var(--info-bg);color:var(--info)" title="shape of the session key">${esc(o.kind)}</span>` : ''}
+      <span class="grow"></span>
+      <span class="mono" style="font-size:12px">${o.sessions} session${o.sessions === 1 ? '' : 's'}</span>
+      <span class="when">${o.lastAt ? rel(o.lastAt, state.now) : ''}</span>
+    </div>`;
+  }).join('');
+
+  return `<div class="card clip">
+    <div class="section-head">How work starts · ${sessions} sessions, ${linked} with a recorded parent</div>
+    <div class="section-hint">An edge above is drawn only where the runtime stamped the originating session onto
+      the delegated prompt. It does that on one delivery path, so most sessions carry no parent at all — that is a
+      gap in what OpenClaw records, not evidence the agents worked alone. These are the triggers it does record.</div>
+    ${rows}
   </div>`;
 }
 
@@ -1225,10 +1275,73 @@ function renderTree(node, prefix, selected, depth) {
   return dirRows + fileRows;
 }
 
+// resolveNotePath turns a link written inside a note into a store-relative
+// path, the same way the server resolves body links when it builds the graph.
+// Returns "" for anything that is not a note reference.
+function resolveNotePath(basePath, target) {
+  if (!target || /^[a-z][a-z0-9+.-]*:/i.test(target)) return '';
+  target = target.split('#')[0].trim();
+  if (!target) return '';
+  if (!target.endsWith('.md')) target += '.md';
+  if (target.startsWith('/')) return target.replace(/^\/+/, '');
+  const parts = String(basePath || '').split('/');
+  parts.pop(); // drop the filename; links resolve against the directory
+  target.split('/').forEach((seg) => {
+    if (seg === '' || seg === '.') return;
+    if (seg === '..') parts.pop();
+    else parts.push(seg);
+  });
+  return parts.join('/');
+}
+
+// noteIndex is what a link can point at: every note on disk, plus a title
+// lookup for [[wikilinks]], which name a page rather than a path.
+function noteIndex() {
+  const byPath = new Set((state.memory || []).map((w) => w.notePath));
+  const byTitle = {};
+  const add = (p) => { if (p && p.title && p.path) byTitle[p.title.toLowerCase()] = p.path; };
+  if (state.wiki) {
+    (state.wiki.pages || []).forEach(add);
+    Object.values(state.wiki.sources || {}).forEach(add);
+  }
+  return { byPath, byTitle };
+}
+
 // A deliberately small markdown renderer. Input is agent-written and untrusted,
 // so everything is escaped first and only then given structure — no raw HTML
 // from a note ever reaches the page.
-function renderMarkdown(src) {
+//
+// opts.basePath and opts.link make the note's own links live. A page that cites
+// its sources is only half readable if following the citation means finding the
+// file by hand. A link is only rendered as a link when its target actually
+// exists, so following one never lands on an error.
+function renderMarkdown(src, opts) {
+  const { basePath = '', link = null } = opts || {};
+  const idx = link ? noteIndex() : null;
+
+  const noteHref = (path) => (link === 'notes'
+    ? `#/memory?tab=notes&note=${encodeURIComponent(path)}`
+    : null);
+
+  // A resolved target becomes an anchor for the notes tree (real navigation) or
+  // a click target for the wiki reader (which swaps the page in place).
+  const linkTo = (path, label) => {
+    const href = noteHref(path);
+    return href
+      ? `<a class="md-wl" href="${href}">${label}</a>`
+      : `<a class="md-wl" data-act="wiki-link" data-path="${esc(path)}">${label}</a>`;
+  };
+
+  const resolve = (target) => {
+    if (!idx) return '';
+    const p = resolveNotePath(basePath, target);
+    return p && idx.byPath.has(p) ? p : '';
+  };
+
+  return renderMarkdownBody(src, { resolve, linkTo, idx });
+}
+
+function renderMarkdownBody(src, ctx) {
   let text = String(src || '');
   let front = '';
   const fm = text.match(/^---\n([\s\S]*?)\n---\n?/);
@@ -1242,10 +1355,26 @@ function renderMarkdown(src) {
   text = text.replace(/```[^\n]*\n([\s\S]*?)```/g, (_, code) =>
     ` ${blocks.push(`<pre class="md-code">${esc(code.replace(/\n$/, ''))}</pre>`) - 1} `);
 
+  const { resolve, linkTo, idx } = ctx || {};
+
   const inline = (s) => esc(s)
     .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]/g, '<span class="md-wl">$1</span>')
-    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<span class="md-wl">$1</span>')
+    // [[Wikilinks]] name a page by title rather than by path.
+    .replace(/\[\[([^\]|#]+)(?:[|#]([^\]]*))?\]\]/g, (m, name, alias) => {
+      const label = (alias || name).trim();
+      const path = idx && idx.byTitle[name.trim().toLowerCase()];
+      return path ? linkTo(path, label) : `<span class="md-wl">${label}</span>`;
+    })
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, target) => {
+      const path = resolve ? resolve(target) : '';
+      if (path) return linkTo(path, label);
+      // An off-site link stays a link; anything else is shown as plain text
+      // rather than offered as a link that would go nowhere.
+      if (/^https?:\/\//i.test(target)) {
+        return `<a class="md-wl" href="${esc(target)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+      }
+      return `<span class="md-wl">${label}</span>`;
+    })
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
 
@@ -1315,7 +1444,7 @@ function viewMemoryNotes() {
       </div>
       ${body === undefined
         ? '<div class="loading">Reading…</div>'
-        : `<article class="md">${renderMarkdown(body)}</article>`}`;
+        : `<article class="md">${renderMarkdown(body, { basePath: selected, link: 'notes' })}</article>`}`;
   }
 
   return `<div class="page">
@@ -1332,7 +1461,7 @@ function viewMemoryNotes() {
           <input placeholder="Filter by path…" data-act="mem-search" value="${esc(q.q || '')}">
         </div>
         ${notes.length
-          ? `<div class="tree-body">${renderTree(tree, '', selected, 0)}</div>`
+          ? `<div class="tree-body" data-scroll-key="tree">${renderTree(tree, '', selected, 0)}</div>`
           : `<div class="gc-hint" style="padding:14px">No note path matches that filter.</div>`}
       </aside>
       <section class="reader">${reader}</section>
@@ -1673,7 +1802,7 @@ function viewWiki() {
         <button data-act="graph-reset">Reset zoom</button>
       </div>
     </div>
-    <aside class="graph-controls">
+    <aside class="graph-controls" data-scroll-key="graph-controls">
       <div class="gc-head">
         <span class="display" style="font-weight:700;font-size:15px">Graph controls</span>
         <span class="mono" style="font-size:11px;color:var(--sub)">${sim.nodes.length}n · ${sim.links.length}e</span>
@@ -1708,34 +1837,40 @@ function viewWiki() {
           <span class="toggle${Object.keys(state.wikiExpanded).length ? ' on' : ''}"><span class="knob"></span></span>
         </div>
       </div>
-      ${state.wikiPage ? renderWikiReader() : `<div class="gc-hint">Click a node to read the page.</div>`}
+      <div class="gc-hint">Click a node to read the page it stands for.</div>
     </aside>
+    ${state.wikiPage ? renderWikiReader() : ''}
   </div>`;
 }
 
 const rel2 = (ts) => rel(ts, state.now);
 
+// Clicking a node opens the page itself. The point of the graph is to find a
+// memory worth reading; showing only its metadata and hiding the actual note
+// behind a "page source" disclosure made the last step the hardest one.
 function renderWikiReader() {
   const { page, content, error } = state.wikiPage;
   const t = wikiType(page.pageType);
-  const claims = (page.claims || []).map((c) => `<li style="margin-bottom:6px">
+  const claims = (page.claims || []).map((c) => `<li>
       ${esc(c.text || c.id || '')}
       ${c.status ? `<span class="chip" style="background:var(--surface2);color:var(--sub);margin-left:4px">${esc(c.status)}</span>` : ''}
       ${c.confidence ? `<span class="chip" style="background:var(--info-bg);color:var(--info)">${(c.confidence * 100).toFixed(0)}%</span>` : ''}
     </li>`).join('');
-  return `<div class="gc-reader">
-    <div class="gc-reader-head">
+
+  return `<section class="wiki-reader" data-scroll-key="wiki:${esc(page.path || page.id || '')}">
+    <div class="reader-head">
       <span class="chip" style="background:var(--surface2);color:${t.color};border:1px solid ${t.color}">${t.label}</span>
-      <span style="flex:1;font-weight:600;font-size:13px">${esc(page.title || page.path)}</span>
+      <span class="reader-title">${esc(page.title || page.path)}</span>
+      <span class="when">${rel2(page.lastRefreshedAt || page.modifiedAt)}</span>
+      <span class="grow"></span>
+      <span class="mono reader-path">${esc(page.path || '')}</span>
       <button class="link-btn" data-act="wiki-close">close</button>
     </div>
-    <div class="when" style="margin-bottom:8px">${rel2(page.lastRefreshedAt || page.modifiedAt)}</div>
-    ${error ? `<div class="empty">${esc(error)}</div>` : `
-      ${claims ? `<ul style="margin:0 0 10px;padding-left:16px;font-size:12.5px;line-height:1.5">${claims}</ul>` : ''}
-      <details><summary style="cursor:pointer;color:var(--link);font-size:12px">Page source</summary>
-        <pre class="mono" style="white-space:pre-wrap;font-size:11.5px;line-height:1.5;background:var(--surface2);border:1px solid var(--border-soft);border-radius:6px;padding:8px;margin-top:6px;max-height:280px;overflow:auto">${esc(content || '')}</pre>
-      </details>`}
-  </div>`;
+    ${error
+      ? `<div class="empty">${esc(error)}</div>`
+      : `${claims ? `<div class="wiki-claims"><div class="gc-label">Claims</div><ul>${claims}</ul></div>` : ''}
+         <article class="md">${renderMarkdown(content, { basePath: page.path, link: 'wiki' })}</article>`}
+  </section>`;
 }
 
 /* ----------------------------------------------------------------- render */
@@ -1746,39 +1881,38 @@ function renderWikiReader() {
 // expanding a single event. Scroll positions are captured before the swap and
 // put back after, unless the route itself changed — a new page should start at
 // the top.
-// Each scroller keeps its own notion of what counts as the same view, because
-// they do not change together: opening another note should put the reader at the
-// top of it while leaving the tree exactly where it was.
-const SCROLLERS = [
-  { sel: '#main', key: (r) => r.seg.join('/') + '|' + (r.q.note || '') },
-  { sel: '.tree-body', key: (r) => r.seg.join('/') },
-  { sel: '.graph-controls', key: (r) => r.seg.join('/') },
-];
-
-const lastKeys = {};
-
-function captureScroll(r) {
+// Anything that scrolls declares a data-scroll-key, and that key carries
+// whatever identifies the thing being scrolled. Matching keys before and after
+// a render means the position is kept; a key that changed — a different route,
+// a different note, a different wiki page — means it is not, so a new thing to
+// read still starts at the top. Both axes are restored: a maintained list of
+// selectors and scrollTop alone missed the horizontal scroll inside an event
+// payload, and missed the wiki reader entirely.
+function captureScroll() {
   const out = {};
-  SCROLLERS.forEach(({ sel, key }) => {
-    const k = key(r);
-    const el = $(sel);
-    if (el && el.scrollTop && lastKeys[sel] === k) out[sel] = el.scrollTop;
-    lastKeys[sel] = k;
+  document.querySelectorAll('[data-scroll-key]').forEach((el) => {
+    if (el.scrollTop || el.scrollLeft) out[el.dataset.scrollKey] = [el.scrollTop, el.scrollLeft];
   });
   return out;
 }
 
 function restoreScroll(saved) {
-  Object.keys(saved).forEach((sel) => {
-    const el = $(sel);
-    if (el) el.scrollTop = saved[sel];
+  document.querySelectorAll('[data-scroll-key]').forEach((el) => {
+    const pos = saved[el.dataset.scrollKey];
+    if (!pos) return;
+    el.scrollTop = pos[0];
+    el.scrollLeft = pos[1];
   });
 }
 
 function render() {
   const r = route();
   const root = $('#root');
-  const saved = captureScroll(r);
+  const saved = captureScroll();
+  // What the main pane is showing. Opening a different note or run is a
+  // different thing to read, so it starts at the top rather than inheriting a
+  // scroll position from whatever was there before.
+  const mainKey = 'main:' + r.seg.join('/') + '|' + (r.q.note || '');
 
   if (!state.loaded) {
     root.innerHTML = renderMasthead() + `<div class="loading">Loading agent data…</div>`;
@@ -1836,7 +1970,8 @@ function render() {
       </div>` : '';
 
   root.innerHTML = renderMasthead() + banner +
-    `<div class="body">${renderSidebar(r)}<main class="main" id="main">${main}</main></div>`;
+    `<div class="body">${renderSidebar(r)}
+      <main class="main" id="main" data-scroll-key="${esc(mainKey)}">${main}</main></div>`;
   restoreScroll(saved);
 
   if (r.isReplay && state.follow && isRunningSession(state.session)) scrollToBottom();
@@ -1966,6 +2101,7 @@ function onClick(e) {
       return render();
     }
     case 'wiki-open':
+    case 'wiki-link':
       return openWikiPage(el.dataset.path);
     case 'wiki-close':
       state.wikiPage = null;

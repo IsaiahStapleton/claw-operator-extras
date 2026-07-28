@@ -347,3 +347,82 @@ func clipBytes(s string, n int) string {
 	}
 	return s
 }
+
+/* ------------------------------------------------------ session provenance */
+
+// SessionOrigin is how one group of sessions came to exist: the agent that ran
+// them, the trigger the runtime recorded, and the kind of session key it used.
+type SessionOrigin struct {
+	Agent    string `json:"agent"`
+	Trigger  string `json:"trigger"`
+	Kind     string `json:"kind"`
+	Sessions int    `json:"sessions"`
+	LastAt   string `json:"lastAt"`
+}
+
+// sessionKeyKind names the shape of a session key. OpenClaw writes
+// "agent:<agent>:<kind>[:<id>]", where kind is "main", "cron", "subagent",
+// "dashboard", or a caller-chosen label such as "stitch-daily-2026-07-26".
+// A caller-chosen label is reported as "named", because the distinction that
+// matters is whether the runtime named it or something outside did.
+func sessionKeyKind(key string) string {
+	parts := strings.Split(key, ":")
+	if len(parts) < 3 || parts[0] != "agent" {
+		return "unknown"
+	}
+	switch parts[2] {
+	case "main", "cron", "subagent", "dashboard":
+		return parts[2]
+	}
+	return "named"
+}
+
+// sessionOrigins summarizes where a fleet's work comes from.
+//
+// This exists because handoff edges alone understate the fleet badly. OpenClaw
+// stamps a parent onto a delegated prompt only on one delivery path, so a Claw
+// whose agents genuinely collaborate can show two edges and hundreds of
+// sessions with no recorded parent at all. Reporting how sessions were actually
+// triggered says something true about that, where an inferred edge would only
+// look like an answer.
+func sessionOrigins(sessions []Session) []SessionOrigin {
+	type acc struct {
+		n    int
+		last string
+	}
+	groups := map[SessionOrigin]*acc{}
+	for _, s := range sessions {
+		var trigger, key, ts string
+		for _, e := range s.Events {
+			if e.Type != "session.started" {
+				continue
+			}
+			trigger, _ = e.Data["trigger"].(string)
+			key, ts = e.SessionKey, e.TS
+			break
+		}
+		if trigger == "" {
+			trigger = "unrecorded"
+		}
+		g := SessionOrigin{Agent: s.Agent, Trigger: trigger, Kind: sessionKeyKind(key)}
+		if groups[g] == nil {
+			groups[g] = &acc{}
+		}
+		groups[g].n++
+		if tsMillis(ts) > tsMillis(groups[g].last) {
+			groups[g].last = ts
+		}
+	}
+	out := make([]SessionOrigin, 0, len(groups))
+	for g, a := range groups {
+		g.Sessions, g.LastAt = a.n, a.last
+		out = append(out, g)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Sessions != out[j].Sessions {
+			return out[i].Sessions > out[j].Sessions
+		}
+		return out[i].Agent < out[j].Agent
+	})
+	return out
+}

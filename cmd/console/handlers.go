@@ -315,8 +315,19 @@ func (s *server) handleHandoffs(w http.ResponseWriter, r *http.Request) {
 	}
 	snap := store.snapshot()
 	edges := findHandoffs(snap.Sessions, snap.Agents)
+	// An edge exists only where the runtime stated a parent. Reporting how many
+	// sessions there are and how few carry one keeps the graph from reading as
+	// a complete picture of who works with whom, which it is not.
+	linked := map[string]bool{}
+	for _, e := range edges {
+		linked[e.ToSessionID] = true
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"handoffs": edges, "data": toDataStatus(snap),
+		"handoffs": edges,
+		"origins":  sessionOrigins(snap.Sessions),
+		"sessions": len(snap.Sessions),
+		"linked":   len(linked),
+		"data":     toDataStatus(snap),
 	})
 }
 
@@ -404,9 +415,13 @@ func (s *server) handleWikiPage(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
 		return
 	}
+	// Any indexed note may be opened, not only wiki pages: a wiki page cites
+	// sources that live outside the wiki, and a citation you cannot follow is
+	// half a citation. The path is matched against the note index below, so it
+	// can only name a file the store already lists.
 	path := r.URL.Query().Get("path")
-	if path == "" || !strings.Contains(path, "/wiki/") {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a wiki page path is required"})
+	if path == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a note path is required"})
 		return
 	}
 	notes, err := store.source.memoryNotes(r.Context())

@@ -311,3 +311,48 @@ func TestNativeMemoryToolCountsAsAWrite(t *testing.T) {
 		t.Fatal("the stored content should be captured")
 	}
 }
+
+// Handoff edges alone understate a fleet badly: OpenClaw stamps a parent onto a
+// delegated prompt on one delivery path only, so a Claw whose agents genuinely
+// collaborate reports a couple of edges against hundreds of sessions. The
+// origin summary is what lets the page say where work actually came from
+// instead of implying the agents worked alone.
+func TestSessionOriginsGroupByAgentTriggerAndKind(t *testing.T) {
+	mk := func(agent, key, trigger string) Session {
+		return Session{Agent: agent, SessionID: agent + key, Events: []Event{{
+			Type: "session.started", TS: "2026-07-26T10:00:00Z", SessionKey: key,
+			Data: map[string]any{"trigger": trigger},
+		}}}
+	}
+	origins := sessionOrigins([]Session{
+		mk("default", "agent:default:cron:abc:run:def", "cron"),
+		mk("default", "agent:default:cron:abc:run:ghi", "cron"),
+		mk("default", "agent:default:main", "user"),
+		mk("stitch", "agent:stitch:stitch-daily-2026-07-26", "user"),
+		{Agent: "quill", SessionID: "no-start"},
+	})
+
+	got := map[string]SessionOrigin{}
+	for _, o := range origins {
+		got[o.Agent+"/"+o.Trigger+"/"+o.Kind] = o
+	}
+	if o := got["default/cron/cron"]; o.Sessions != 2 {
+		t.Fatalf("cron sessions = %d, want 2; origins=%+v", o.Sessions, origins)
+	}
+	if _, ok := got["default/user/main"]; !ok {
+		t.Fatalf("missing the main session; origins=%+v", origins)
+	}
+	// A caller-chosen session key is reported as "named": the distinction that
+	// matters is whether the runtime named the session or something outside did.
+	if _, ok := got["stitch/user/named"]; !ok {
+		t.Fatalf("a caller-named session key should group as 'named'; origins=%+v", origins)
+	}
+	// A session whose start was never recorded is counted, not dropped.
+	if _, ok := got["quill/unrecorded/unknown"]; !ok {
+		t.Fatalf("a session with no session.started must still be reported; origins=%+v", origins)
+	}
+	// Biggest group first, so the page leads with where the work really comes from.
+	if origins[0].Sessions < origins[len(origins)-1].Sessions {
+		t.Fatalf("origins are not ordered by size: %+v", origins)
+	}
+}

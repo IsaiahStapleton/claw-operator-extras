@@ -572,8 +572,25 @@ td.nowrap { white-space: nowrap; }
 .gslider input { display: block; width: 100%; margin-top: 6px; accent-color: var(--link); cursor: pointer; }
 .gc-toggle { display: flex; align-items: center; justify-content: space-between; cursor: pointer; }
 .gc-hint { font-size: 12px; color: var(--sub); line-height: 1.5; }
-.gc-reader { border-top: 1px solid var(--border-soft); padding-top: 14px; }
-.gc-reader-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+
+/* The opened page gets a column of its own rather than being squeezed into the
+   controls rail: the graph exists to find a memory worth reading, so reading it
+   should not be the cramped part. */
+.wiki-reader {
+  flex: 0 0 min(46%, 560px); min-width: 0;
+  border-left: 1px solid var(--border-soft); background: var(--surface);
+  display: flex; flex-direction: column; overflow-y: auto;
+}
+.wiki-reader .reader-head { position: sticky; top: 0; z-index: 2; }
+.wiki-claims { padding: 12px 24px 0; }
+.wiki-claims ul { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.55; }
+.wiki-claims li { margin-bottom: 6px; }
+
+@media (max-width: 1200px) {
+  /* Controls give way before the page being read does. */
+  .graph-wrap .graph-controls { display: none; }
+  .wiki-reader { flex: 0 0 min(52%, 560px); }
+}
 
 /* The graph fills the viewport rather than scrolling with the page. */
 .main:has(.graph-wrap) { overflow: hidden; }
@@ -693,7 +710,12 @@ td.nowrap { white-space: nowrap; }
   background: var(--surface2); border: 1px solid var(--border-soft);
   border-radius: 8px; padding: 10px 12px; overflow-x: auto; margin: 0 0 10px;
 }
+/* A link the note actually declared. Anchors are followable; the span form is
+   the same text where the target does not exist, so a dead link never looks
+   clickable. */
 .md-wl { color: var(--link); }
+a.md-wl { cursor: pointer; }
+a.md-wl:hover { text-decoration: underline; }
 .md-front { margin-bottom: 14px; }
 .md-front summary {
   cursor: pointer; color: var(--sub); font-size: 11px;
