@@ -446,15 +446,9 @@ function renderMasthead() {
 
   return `<header class="masthead">
     <a class="brand" href="#/">
-      <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
-        <rect width="28" height="28" rx="6" fill="var(--brand-red)"></rect>
-        <path d="M8 20 Q10 9 14 7 Q12 13 12 20 Z" fill="#fff"></path>
-        <path d="M13.5 20 Q15.5 10 19 8.5 Q17 14 16.5 20 Z" fill="#fff" opacity="0.85"></path>
-        <path d="M18.5 20 Q20.5 13 23 12 Q21 16 20.5 20 Z" fill="#fff" opacity="0.7"></path>
-      </svg>
+      <img class="brand-logo" src="openclaw.svg" alt="" aria-hidden="true">
       <span class="brand-text">
         <span class="brand-title">Agent Console</span>
-        <span class="brand-sub">OpenClaw fleet</span>
       </span>
     </a>
     ${renderScopePicker()}
@@ -1746,9 +1740,45 @@ function renderWikiReader() {
 
 /* ----------------------------------------------------------------- render */
 
+// Every render replaces the document, which resets the scroll of anything that
+// scrolls. That is invisible on a static page and unusable on a live one: the
+// five-second refresh threw the reader back to the top of a session, and so did
+// expanding a single event. Scroll positions are captured before the swap and
+// put back after, unless the route itself changed — a new page should start at
+// the top.
+// Each scroller keeps its own notion of what counts as the same view, because
+// they do not change together: opening another note should put the reader at the
+// top of it while leaving the tree exactly where it was.
+const SCROLLERS = [
+  { sel: '#main', key: (r) => r.seg.join('/') + '|' + (r.q.note || '') },
+  { sel: '.tree-body', key: (r) => r.seg.join('/') },
+  { sel: '.graph-controls', key: (r) => r.seg.join('/') },
+];
+
+const lastKeys = {};
+
+function captureScroll(r) {
+  const out = {};
+  SCROLLERS.forEach(({ sel, key }) => {
+    const k = key(r);
+    const el = $(sel);
+    if (el && el.scrollTop && lastKeys[sel] === k) out[sel] = el.scrollTop;
+    lastKeys[sel] = k;
+  });
+  return out;
+}
+
+function restoreScroll(saved) {
+  Object.keys(saved).forEach((sel) => {
+    const el = $(sel);
+    if (el) el.scrollTop = saved[sel];
+  });
+}
+
 function render() {
   const r = route();
   const root = $('#root');
+  const saved = captureScroll(r);
 
   if (!state.loaded) {
     root.innerHTML = renderMasthead() + `<div class="loading">Loading agent data…</div>`;
@@ -1807,6 +1837,7 @@ function render() {
 
   root.innerHTML = renderMasthead() + banner +
     `<div class="body">${renderSidebar(r)}<main class="main" id="main">${main}</main></div>`;
+  restoreScroll(saved);
 
   if (r.isReplay && state.follow && isRunningSession(state.session)) scrollToBottom();
   // Arriving on a run deep in a long session should land on that run, not at
