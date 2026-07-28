@@ -82,8 +82,56 @@ func extractLinks(pagePath string, body []byte) []string {
 
 // Page types that make up the synthesized layer — what the wiki has actually
 // concluded, as opposed to the raw memory it imported.
+//
+// Reports are excluded deliberately. They are generated dashboards over the
+// wiki (lint results, claim health, stale pages) rather than knowledge, and
+// they link to nothing, so every one of them rendered as an isolated dot.
 var synthesizedTypes = map[string]bool{
-	"concept": true, "entity": true, "synthesis": true, "report": true,
+	"concept": true, "entity": true, "synthesis": true,
+}
+
+// Vault plumbing: instructions to the agent and documentation of the wiki
+// itself. Real files, but not things the wiki knows.
+var plumbingPages = map[string]bool{
+	"AGENTS.md": true, "WIKI.md": true, "inbox.md": true,
+}
+
+// Directories whose index page is a table of contents for one page type.
+// Those indexes say only "these pages are concepts", which the graph already
+// says with colour, so drawing them adds a hub that carries no information.
+// The wiki's root index is a different thing and is kept: it links across
+// types, and is what ties otherwise separate clusters together.
+var sectionDirs = map[string]bool{
+	"concepts": true, "entities": true, "syntheses": true,
+	"sources": true, "reports": true, "claims": true,
+}
+
+// graphExcluded reports whether a page is wiki machinery rather than content.
+//
+// The quarantine directory is the one that matters: OpenClaw parks superseded
+// copies under .openclaw-wiki/quarantine/ when it retypes a page, so a real
+// vault contains both entities/stitch.md and a quarantined stitch.synthesis.md
+// carrying the same title. Both became nodes, and the quarantined one had no
+// edges — which is exactly what a duplicate orphan looks like on screen.
+func graphExcluded(p WikiPage) bool {
+	if p.PageType == "report" {
+		return true
+	}
+	for _, seg := range strings.Split(p.Path, "/") {
+		// .openclaw-wiki holds the quarantine and the machine cache.
+		if strings.HasPrefix(seg, ".") {
+			return true
+		}
+		// reports/index.md carries no pageType, so it needs the path check.
+		if seg == "reports" {
+			return true
+		}
+	}
+	base := path.Base(p.Path)
+	if base == "index.md" && sectionDirs[path.Base(path.Dir(p.Path))] {
+		return true
+	}
+	return plumbingPages[base]
 }
 
 // WikiRel is a typed edge the page declares to another page.
@@ -119,7 +167,13 @@ type wikiFrontmatter struct {
 
 // WikiPage is one page as the console reports it.
 type WikiPage struct {
-	Path            string      `json:"path"`
+	Path string `json:"path"`
+	// Key is this page's identity in the graph, and the only thing edges are
+	// expressed in terms of. It exists because a page's id is optional — the
+	// generated index pages carry no frontmatter at all — so a consumer that
+	// keyed nodes by id alone collapsed every index page onto the empty string
+	// and silently dropped each edge that referenced one.
+	Key             string      `json:"key"`
 	ID              string      `json:"id"`
 	PageType        string      `json:"pageType"`
 	Title           string      `json:"title"`
@@ -198,13 +252,38 @@ func splitFrontmatter(body []byte) ([]byte, bool) {
 	return []byte(rest[:end]), true
 }
 
+// titleFromPath names a page that carries no title of its own. Generated index
+// pages are all called index.md, so naming them by their own filename produced
+// five nodes labelled "index"; they take the name of the section they index
+// instead.
 func titleFromPath(p string) string {
-	base := p
-	if i := strings.LastIndex(base, "/"); i >= 0 {
-		base = base[i+1:]
+	base := strings.TrimSuffix(path.Base(p), ".md")
+	if base == "index" {
+		switch dir := path.Base(path.Dir(p)); dir {
+		case "main", "wiki", ".", "/":
+			return "Wiki index"
+		default:
+			base = dir
+		}
 	}
-	base = strings.TrimSuffix(base, ".md")
-	return strings.ReplaceAll(base, "-", " ")
+	return titleCase(strings.ReplaceAll(base, "-", " "))
+}
+
+func titleCase(s string) string {
+	words := strings.Fields(s)
+	for i, w := range words {
+		words[i] = strings.ToUpper(w[:1]) + w[1:]
+	}
+	return strings.Join(words, " ")
+}
+
+// nodeKey is a page's identity in the graph: its id when it declares one, its
+// path otherwise, so a page without frontmatter can still take part.
+func nodeKey(p WikiPage) string {
+	if p.ID != "" {
+		return p.ID
+	}
+	return p.Path
 }
 
 // buildWikiGraph splits pages into the synthesized layer and its sources, and
@@ -217,13 +296,23 @@ func buildWikiGraph(pages []WikiPage) WikiGraph {
 		Edges:   []WikiEdge{},
 		Counts:  map[string]int{},
 	}
-	byID := map[string]WikiPage{}
+	// Machinery is dropped before anything else looks at it, so an excluded
+	// page cannot become a node, an edge target, or a count.
+	// Identity is stamped on every page here, once, so that nodes and edges can
+	// never be keyed by two different rules.
+	kept := make([]WikiPage, 0, len(pages))
+	for _, p := range pages {
+		if graphExcluded(p) {
+			continue
+		}
+		p.Key = nodeKey(p)
+		kept = append(kept, p)
+	}
+	pages = kept
+
 	for _, p := range pages {
 		if p.PageType != "" {
 			graph.Counts[p.PageType]++
-		}
-		if p.ID != "" {
-			byID[p.ID] = p
 		}
 	}
 
@@ -253,15 +342,6 @@ func buildWikiGraph(pages []WikiPage) WikiGraph {
 	for _, p := range pages {
 		byPath[p.Path] = p
 	}
-	// A node's key is its id when it has one and its path otherwise, so every
-	// page can take part in the graph.
-	nodeKey := func(p WikiPage) string {
-		if p.ID != "" {
-			return p.ID
-		}
-		return p.Path
-	}
-
 	seen := map[string]bool{}
 	addEdge := func(from, to, kind string, weight, confidence float64) {
 		if from == "" || to == "" || from == to {
@@ -278,7 +358,7 @@ func buildWikiGraph(pages []WikiPage) WikiGraph {
 	}
 
 	for _, p := range pages {
-		from := nodeKey(p)
+		from := p.Key
 		if synthesizedTypes[p.PageType] {
 			for _, rel := range p.Relationships {
 				if known[rel.TargetID] {
@@ -297,7 +377,7 @@ func buildWikiGraph(pages []WikiPage) WikiGraph {
 			if !ok {
 				continue
 			}
-			addEdge(from, nodeKey(tp), "link", 0, 0)
+			addEdge(from, tp.Key, "link", 0, 0)
 		}
 	}
 	return graph

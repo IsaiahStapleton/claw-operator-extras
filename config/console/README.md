@@ -22,6 +22,11 @@ oc apply -k config/console
 oc get route agent-console -o jsonpath='{.spec.host}{"\n"}'
 ```
 
+The console claims a 1 GiB `ReadWriteOnce` volume for what it has observed about
+each Claw's memory notes. Because that volume attaches to one node at a time,
+the Deployment uses the `Recreate` strategy — a rolling update would deadlock
+waiting for the old pod to release it.
+
 If the `oauth-proxy` container crash-loops on startup, this secret is the first
 thing to check: a value that does not decode to a valid AES key length fails
 there rather than at apply time.
@@ -85,6 +90,7 @@ silently dropped.
 | `AGENT_META` | unset | JSON map of `{agent: {emoji, title, desc}}` for display |
 | `MEMORY_PATH_PATTERN` | `(?:^\|/)(?:memory\|wiki)/[\w\-./]*\.md` | Regexp matching vault note paths. The default covers all three of OpenClaw's stores; override it for a vault kept elsewhere. |
 | `CONSOLE_CACHE_MS` | `2000` | Minimum interval between re-indexes |
+| `CONSOLE_STATE_DIR` | unset | Where observed memory writes are persisted. Unset (or unwritable) degrades to an in-memory record that the memory page reports as such. |
 
 ## What counts as a memory write
 
@@ -95,16 +101,43 @@ them:
 - `workspace/wiki/main/**` — the memory wiki (concepts, entities, syntheses)
 - `<agent>/memory/dreaming/{deep,light}/*.md` — per-agent consolidation
 
-The feed lists these **as they exist on disk**, newest first. It is not derived
-from tool calls, and that distinction matters: OpenClaw's consolidation and
-wiki synthesis write notes directly, with no agent tool call to observe. On a
-real Claw a tool-derived feed found 22 notes where the stores held 422 — it
+The **All notes** tab lists these as they exist on disk, newest first. It is not
+derived from tool calls, and that distinction matters: OpenClaw's consolidation
+and wiki synthesis write notes directly, with no agent tool call to observe. On
+a real Claw a tool-derived feed found 22 notes where the stores held 422 — it
 missed every consolidation run and the entire wiki.
 
 Tool calls are still read, but only for attribution: where one recorded a
 write, it supplies the agent and session behind a note. Notes with no tool call
 are attributed to the agent whose directory holds them, and notes under
 `workspace/` belong to no single agent.
+
+### Observed writes
+
+The **Observed writes** tab answers a narrower question — what changed, and
+which lines appeared — and it is the console's own observation rather than
+anything OpenClaw recorded. Each note's content is remembered and diffed on
+change.
+
+Every entry carries a diff. A note seen for the first time establishes a
+baseline silently: there is nothing to diff against, and announcing several
+hundred pre-existing notes as writes would be false at the exact moment the feed
+needs to be trusted.
+
+That record is persisted to `CONSOLE_STATE_DIR`, which is what makes it useful.
+Without it the baseline was re-taken on every redeploy and the page reported
+nothing had happened when the console had merely forgotten. With it, a write
+made while the console was down still shows its real lines on the next read.
+
+Two limits remain, and the UI states them:
+
+- Detection advances only when someone loads the memory page. The console holds
+  no standing permission to read any Claw, so it cannot poll on its own.
+- Several writes to one note between two reads are reported as the one diff that
+  spans them.
+
+Only notes whose size or mtime moved are actually read, so a refresh of a settled
+vault transfers nothing; the full read happens once, when the baseline is set.
 
 ## A note on agent backends
 

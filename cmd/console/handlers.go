@@ -22,6 +22,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -93,7 +94,8 @@ func (s *server) resolveStore(r *http.Request) (*Store, error) {
 		if st, ok := s.stores["local"]; ok {
 			return st, nil
 		}
-		st := newStoreFromSource(dirSource{root: s.localDir}, s.cacheTTL, s.excluded)
+		st := newStoreFromSource(dirSource{root: s.localDir}, s.cacheTTL, s.excluded,
+			s.watcherFor("local", "local"))
 		s.stores["local"] = st
 		return st, nil
 	}
@@ -233,6 +235,10 @@ func (s *server) handleRunDetail(w http.ResponseWriter, r *http.Request, agent, 
 	if children == nil {
 		children = []Handoff{}
 	}
+	// A session is a conversation: one file holds every run the agent did in it,
+	// up to 48 on a real Claw. Returning them all lets the UI show the session
+	// as its runs rather than as one undifferentiated wall of events.
+	runs := runsOfSession(snap.Runs, agent, sessionID)
 	run := latestRunOf(snap.Runs, agent, sessionID)
 
 	if detail := store.sessionEvents(agent, sessionID, offset, limit); detail != nil {
@@ -243,7 +249,8 @@ func (s *server) handleRunDetail(w http.ResponseWriter, r *http.Request, agent, 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"agent": agent, "sessionId": sessionID, "total": detail.Total,
 			"badLines": detail.BadLines, "offset": offset, "source": "trajectory",
-			"parent": parent, "children": children, "run": run, "events": events,
+			"parent": parent, "children": children, "run": run, "runs": runs,
+			"events": events,
 		})
 		return
 	}
@@ -253,7 +260,8 @@ func (s *server) handleRunDetail(w http.ResponseWriter, r *http.Request, agent, 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"agent": agent, "sessionId": sessionID, "total": total,
 			"badLines": 0, "offset": offset, "source": "transcript",
-			"parent": nil, "children": []Handoff{}, "run": run, "events": msgs,
+			"parent": nil, "children": []Handoff{}, "run": run, "runs": runs,
+			"events": msgs,
 		})
 		return
 	}
@@ -326,20 +334,50 @@ func (s *server) handleMemory(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
 		return
 	}
-	limit := clampInt(r.URL.Query().Get("limit"), 50, 1, 500)
-	writes, snap, err := store.memoryFeed(r.Context(), limit)
+	limit := clampInt(r.URL.Query().Get("limit"), 50, 1, 2000)
+	writes, total, snap, err := store.memoryFeed(r.Context(), limit)
 	if err != nil {
 		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"writes": writes,
-		// Changes actually observed since this console started watching, with
-		// the lines that appeared. Empty on a cold start: nothing before the
-		// console was running is recoverable.
-		"observed": store.recentWrites(100),
-		"data":     toDataStatus(snap),
+		// How many notes exist, so a truncated listing can say so rather than
+		// presenting itself as the whole vault.
+		"total": total,
+		// Changes actually observed, with the lines that appeared. Empty only
+		// on the very first read of a vault, when there is no previous content
+		// to diff against.
+		"observed": store.watch.recent(100),
+		// How far back the observation goes, and whether it survives a restart.
+		// Saying so beats an empty feed that looks like the agents wrote
+		// nothing when in fact the console had simply forgotten.
+		"watchingSince": store.watch.watchingFrom(),
+		"persistent":    store.watch.persistent(),
+		"data":          toDataStatus(snap),
 	})
+}
+
+// handleMemoryNote returns one note in full. Content is fetched per note rather
+// than bundled into the listing, which is what lets the memory page poll
+// without dragging the whole vault across an exec channel every few seconds.
+func (s *server) handleMemoryNote(w http.ResponseWriter, r *http.Request) {
+	store, err := s.resolveStore(r)
+	if err != nil {
+		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
+		return
+	}
+	notePath := r.URL.Query().Get("path")
+	if notePath == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a note path is required"})
+		return
+	}
+	body, err := store.memoryNote(r.Context(), notePath)
+	if err != nil {
+		writeJSON(w, statusCodeFor(err), map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"path": notePath, "content": body})
 }
 
 // handleWiki returns the memory wiki's synthesized layer as a graph, with its
@@ -417,6 +455,21 @@ func (s *server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	snap := store.snapshot()
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	_, _ = w.Write([]byte(renderMetrics(snap)))
+}
+
+// runsOfSession returns every run recorded in one session, oldest first, which
+// is the order the conversation happened in.
+func runsOfSession(runs []Run, agent, sessionID string) []Run {
+	out := []Run{}
+	for i := range runs {
+		if runs[i].Agent == agent && runs[i].SessionID == sessionID {
+			out = append(out, runs[i])
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return tsMillis(out[i].StartedAt) < tsMillis(out[j].StartedAt)
+	})
+	return out
 }
 
 func latestRunOf(runs []Run, agent, sessionID string) *Run {

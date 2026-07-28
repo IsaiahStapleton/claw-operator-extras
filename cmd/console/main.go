@@ -72,10 +72,20 @@ type server struct {
 	excluded   []string
 	static     fs.FS
 
+	// stateDir persists what the console has observed. Empty means the record
+	// lives only in memory and is lost on restart.
+	stateDir string
+
 	// Stores are per (user, namespace, claw): the cache must never be shared
 	// across users, or one tenant's snapshot could be served to another.
 	mu     sync.Mutex
 	stores map[string]*Store
+	// Watchers are per Claw, not per user. What a Claw's notes did is a fact
+	// about the Claw; sharing the observation is what lets one user see a diff
+	// the console happened to catch while another was looking. Reaching a
+	// watcher at all still requires an impersonated read the API server
+	// authorized, so this widens no one's access.
+	watchers map[string]*memoryWatcher
 }
 
 func main() {
@@ -99,6 +109,7 @@ func main() {
 	})
 	mux.HandleFunc("GET /api/handoffs", s.handleHandoffs)
 	mux.HandleFunc("GET /api/memory", s.handleMemory)
+	mux.HandleFunc("GET /api/memory/note", s.handleMemoryNote)
 	mux.HandleFunc("GET /api/wiki", s.handleWiki)
 	mux.HandleFunc("GET /api/wiki/page", s.handleWikiPage)
 	mux.HandleFunc("GET /api/health", s.handleHealth)
@@ -136,7 +147,18 @@ func newServer() (*server, error) {
 		cacheTTL:   time.Duration(getenvInt("CONSOLE_CACHE_MS", defaultCacheMs)) * time.Millisecond,
 		excluded:   excluded,
 		static:     sub,
+		stateDir:   os.Getenv("CONSOLE_STATE_DIR"),
 		stores:     map[string]*Store{},
+		watchers:   map[string]*memoryWatcher{},
+	}
+	// An unwritable state directory is reported and then ignored: the console
+	// degrades to an in-memory record, which the memory page says outright,
+	// rather than refusing to start over a durability feature.
+	if s.stateDir != "" {
+		if err := os.MkdirAll(s.stateDir, 0o755); err != nil {
+			log.Printf("CONSOLE_STATE_DIR unusable, memory observations will not survive a restart: %v", err)
+			s.stateDir = ""
+		}
 	}
 	if s.localDir != "" {
 		return s, nil // local mode needs no cluster access
@@ -168,9 +190,23 @@ func (s *server) storeFor(identity userIdentity, namespace, claw, pod string) *S
 		srv: s, identity: identity, namespace: namespace,
 		pod: pod, container: s.container, agentsDir: s.agentsDir,
 	})
-	st := newStoreFromSource(src, s.cacheTTL, s.excluded)
+	st := newStoreFromSource(src, s.cacheTTL, s.excluded, s.watcherFor(namespace, claw))
 	s.stores[key] = st
 	return st
+}
+
+// watcherFor returns the shared memory watcher for one Claw. Callers hold s.mu.
+func (s *server) watcherFor(namespace, claw string) *memoryWatcher {
+	key := namespace + "\x00" + claw
+	if s.watchers == nil {
+		s.watchers = map[string]*memoryWatcher{}
+	}
+	if w, ok := s.watchers[key]; ok {
+		return w
+	}
+	w := newMemoryWatcher(watcherPath(s.stateDir, namespace, claw))
+	s.watchers[key] = w
+	return w
 }
 
 // handleStatic serves the embedded SPA. The app uses hash routing, so unknown

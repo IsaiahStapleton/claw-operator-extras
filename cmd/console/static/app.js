@@ -98,16 +98,23 @@ const state = {
   sortKey: 'time',
   sortDir: 'desc',
   expandedEv: {},
-  expandedMem: {},
+  expandedDirs: {},
+  expandedRuns: {},
+  noteContent: {},   // note path -> fetched body, for the notes reader
+  noteLoading: {},
   follow: true,
   showResume: false,
+  runScrolled: false,
   topoRange: '7d',
   selEdge: null,
   // data
   agents: [],
   runs: [],
   memory: [],
+  memoryTotal: 0,
   observed: [],
+  watchingSince: '',
+  memPersistent: false,
   handoffs: [],
   meta: { ok: true, error: '', badLines: 0, scannedFiles: 0, unreadableFiles: 0 },
   gateway: { status: 'disabled' },
@@ -156,7 +163,12 @@ function parseHash(h) {
     const k = i < 0 ? kv : kv.slice(0, i);
     q[k] = decodeURIComponent(i < 0 ? '' : kv.slice(i + 1));
   });
-  return { seg: p.split('/').filter(Boolean), q };
+  // Segments are decoded: a run id is now part of the path, and it is not
+  // guaranteed to be URL-safe the way a session UUID is.
+  const seg = p.split('/').filter(Boolean).map((s) => {
+    try { return decodeURIComponent(s); } catch { return s; }
+  });
+  return { seg, q };
 }
 
 function setQ(patch) {
@@ -181,6 +193,21 @@ async function loadWiki() {
   render();
 }
 
+// loadNote fetches one note's body on demand. In-flight and completed reads are
+// both remembered, so a five-second re-render does not re-request the file.
+async function loadNote(path) {
+  if (state.noteContent[path] !== undefined || state.noteLoading[path]) return;
+  state.noteLoading[path] = true;
+  try {
+    const d = await getJSON('api/memory/note' + scopeQuery({ path }));
+    state.noteContent[path] = d.content || '';
+  } catch (err) {
+    state.noteContent[path] = '(could not read this note: ' + String(err.message || err) + ')';
+  }
+  delete state.noteLoading[path];
+  render();
+}
+
 async function openWikiPage(path) {
   try {
     state.wikiPage = await getJSON('api/wiki/page' + scopeQuery({ path }));
@@ -196,6 +223,9 @@ function route() {
   const isAgent = seg[0] === 'agents' && !isReplay && !!seg[1];
   return {
     seg, q, isReplay, isAgent,
+    // A session holds many runs. The trailing /runs/<id> names which one the
+    // reader came in on, so the page can open that one instead of guessing.
+    runId: isReplay && seg[4] === 'runs' ? seg[5] || '' : '',
     isTopology: seg[0] === 'topology',
     isMemory: seg[0] === 'memory',
     isWiki: seg[0] === 'wiki',
@@ -243,7 +273,7 @@ async function refresh() {
     const [agents, runs, memory, handoffs, health] = await Promise.all([
       getJSON('api/agents' + scopeQuery()),
       getJSON('api/runs' + scopeQuery({ limit: 500 })),
-      getJSON('api/memory' + scopeQuery({ limit: 200 })),
+      getJSON('api/memory' + scopeQuery({ limit: 2000 })),
       getJSON('api/handoffs' + scopeQuery()),
       getJSON('api/health' + scopeQuery()),
     ]);
@@ -251,7 +281,10 @@ async function refresh() {
       agents: agents.agents || [],
       runs: runs.runs || [],
       memory: memory.writes || [],
+      memoryTotal: memory.total || 0,
       observed: memory.observed || [],
+      watchingSince: memory.watchingSince || '',
+      memPersistent: !!memory.persistent,
       handoffs: handoffs.handoffs || [],
       meta: health.data || state.meta,
       gateway: health.gateway || { status: 'disabled' },
@@ -556,7 +589,7 @@ function renderRunsTable(lockedAgent) {
 
   const body = visible.map((r) => {
     const spawn = r.spawnedBy ? agentMeta(r.spawnedBy.fromAgent).title : '';
-    return `<tr data-act="open-run" data-agent="${esc(r.agent)}" data-session="${esc(r.sessionId)}">
+    return `<tr data-act="open-run" data-agent="${esc(r.agent)}" data-session="${esc(r.sessionId)}" data-run="${esc(r.runId)}">
       <td class="when" title="${esc(exact(r.startedAt))}">${rel(r.startedAt, state.now)}</td>
       ${lockedAgent ? '' : `<td class="nowrap">${agentLink(r.agent)}</td>`}
       <td class="prompt" title="${esc(r.prompt)}${r.promptSource === 'transcript'
@@ -662,8 +695,10 @@ function viewOverview() {
     ? renderRunsTable(null)
     : (state.memory.length
       ? state.memory.slice().sort((a, b) => ms(b.ts) - ms(a.ts)).map((w) => memoryRow(w)).join('')
-      : `<div class="empty"><div class="empty-title">No vault writes recorded</div>
-          <div class="empty-body">Writes are detected from tool.call events touching <span class="mono">memory-map/**/*.md</span>.</div></div>`);
+      : `<div class="empty"><div class="empty-title">No memory notes yet</div>
+          <div class="empty-body">Notes are read from this Claw's memory stores:
+            <span class="mono">workspace/memory</span>, <span class="mono">workspace/wiki</span>,
+            and each agent's own <span class="mono">memory/dreaming</span>.</div></div>`);
 
   return `<div class="page">
     <div class="page-head">
@@ -797,7 +832,16 @@ function viewAgent(name) {
   </div>`;
 }
 
-function viewReplay(agent, sessionId) {
+const runHref = (agent, sessionId, runId) =>
+  `#/agents/${encodeURIComponent(agent)}/sessions/${encodeURIComponent(sessionId)}` +
+  (runId ? `/runs/${encodeURIComponent(runId)}` : '');
+
+// A session is one continuous conversation, and OpenClaw records every run of
+// it in a single file — up to 48 on a real Claw. Showing that file as one flat
+// event list meant the run you clicked was indistinguishable from the 47 you
+// did not, so the page is built from runs, with only the one you opened
+// expanded.
+function viewSession(agent, sessionId, wantRun) {
   const m = agentMeta(agent);
   const s = state.session;
   const crumbs = `<div class="crumbs"><a href="#/">Overview</a> /
@@ -810,9 +854,6 @@ function viewReplay(agent, sessionId) {
     return `<div><div class="replay-head">${crumbs}</div><div class="empty" style="padding:60px">Session not found.</div></div>`;
   }
 
-  const run = s.run || state.runs.find((r) => r.sessionId === sessionId && r.agent === agent);
-  const outcome = run ? run.outcome : 'ok';
-  const om = outMeta(outcome);
   const running = isRunningSession(s);
   const isChat = s.source === 'transcript';
   const srcStyle = s.source === 'trajectory'
@@ -821,23 +862,31 @@ function viewReplay(agent, sessionId) {
 
   const children = (s.children || []).map((c) =>
     `<a class="chip" style="background:var(--teal-bg);color:var(--teal)"
-      href="#/agents/${encodeURIComponent(c.toAgent)}/sessions/${encodeURIComponent(c.toSessionId)}">→ ${esc(agentMeta(c.toAgent).title)} ${esc(String(c.toSessionId).slice(0, 6))}…</a>`).join('');
+      href="${runHref(c.toAgent, c.toSessionId, '')}">→ ${esc(agentMeta(c.toAgent).title)} ${esc(String(c.toSessionId).slice(0, 6))}…</a>`).join('');
 
-  const head = `<div class="replay-head">
+  const runs = s.runs || [];
+  const totals = runs.reduce((t, r) => ({
+    tokens: t.tokens + ((r.tokens && r.tokens.total) || 0),
+    errors: t.errors + (r.outcome === 'error' ? 1 : 0),
+  }), { tokens: 0, errors: 0 });
+
+  const head = `<div class="replay-head session-head">
     ${crumbs}
     <div class="replay-title">
       <span style="font-size:20px">${m.emoji}</span>
       <span class="name">${esc(m.title)}</span>
       <span class="sid">${esc(sessionId)}</span>
       <span class="chip" style="${srcStyle}">${esc(s.source || 'trajectory')}</span>
-      ${pill(om.label, om, running)}
       ${s.badLines ? `<span class="chip" style="background:var(--warn-bg);color:var(--warn)"
         title="unparseable lines in this session file, excluded from replay">⚠ ${s.badLines} bad lines</span>` : ''}
       ${s.parent ? `<a class="chip" style="background:var(--purple-bg);color:var(--purple)"
-        href="#/agents/${encodeURIComponent(s.parent.fromAgent)}/sessions/${encodeURIComponent(s.parent.fromSessionId)}">← spawned by ${esc(agentMeta(s.parent.fromAgent).title)}</a>` : ''}
+        href="${runHref(s.parent.fromAgent, s.parent.fromSessionId, s.parent.fromRunId)}">← spawned by ${esc(agentMeta(s.parent.fromAgent).title)}</a>` : ''}
       ${children}
       <span class="spacer"></span>
-      <span class="result-count">${(s.events || []).length} ${isChat ? 'messages' : 'events'}${running ? ' · live' : ''}</span>
+      <span class="result-count">${isChat
+        ? `${(s.events || []).length} messages`
+        : `${runs.length} run${runs.length === 1 ? '' : 's'} · ${(s.events || []).length} events${
+            totals.errors ? ` · ${totals.errors} failed` : ''} · ${tok(totals.tokens)} tokens`}${running ? ' · live' : ''}</span>
       ${running ? `<button class="follow-btn" data-act="follow">
         <span class="toggle${state.follow ? ' on' : ''}"><span class="knob"></span></span>auto-follow</button>` : ''}
     </div>
@@ -854,15 +903,76 @@ function viewReplay(agent, sessionId) {
     return `<div>${head}<div class="chat">${msgs}</div></div>`;
   }
 
-  const events = (s.events || []).map((e, i) => {
+  // Events carry the run that produced them, so the file partitions cleanly.
+  const byRun = new Map();
+  (s.events || []).forEach((e, i) => {
+    const k = e.runId || '(no run id)';
+    if (!byRun.has(k)) byRun.set(k, []);
+    byRun.get(k).push({ ...e, _i: i });
+  });
+
+  // Runs the summary knows about, then any run that only the raw events
+  // mention — an event is never dropped because its run was not derived.
+  const known = new Set(runs.map((r) => r.runId));
+  const extra = [...byRun.keys()].filter((k) => !known.has(k))
+    .map((k) => ({ runId: k, sessionId, agent, outcome: '', prompt: '',
+      startedAt: (byRun.get(k)[0] || {}).ts }));
+  const ordered = runs.concat(extra)
+    .sort((a, b) => ms(a.startedAt) - ms(b.startedAt));
+
+  // Default open: the run the URL names, else the newest, so arriving without
+  // a run still lands on something rather than a wall of collapsed rows.
+  const fallback = ordered.length ? ordered[ordered.length - 1].runId : '';
+  const defaultOpen = wantRun && ordered.some((r) => r.runId === wantRun) ? wantRun : fallback;
+
+  const blocks = ordered.map((r, i) => {
+    const evs = byRun.get(r.runId) || [];
+    const open = state.expandedRuns[r.runId] !== undefined
+      ? state.expandedRuns[r.runId] : r.runId === defaultOpen;
+    const current = r.runId === wantRun;
+    const om = outMeta(r.outcome || (evs.length ? 'ok' : ''));
+    const t = r.tokens || {};
+    return `<div class="run-block${current ? ' current' : ''}" id="run-${esc(r.runId)}">
+      <div class="run-head" data-act="toggle-run" data-run="${esc(r.runId)}">
+        <span class="caret">${open ? '▾' : '▸'}</span>
+        <span class="idx">#${i + 1}</span>
+        <span class="when" title="${esc(exact(r.startedAt))}">${hms(r.startedAt)}</span>
+        ${r.outcome ? outcomePill(r.outcome) : ''}
+        <span class="rp"${r.promptTruncated ? ' style="color:var(--sub);font-style:italic"' : ''}>${esc(r.prompt || '(no prompt recorded)')}</span>
+        ${r.promptSource === 'transcript' ? `<span class="chip tag" style="background:var(--warn-bg);color:var(--warn)"
+          title="The trajectory event was truncated; this prompt was recovered from the session transcript.">recovered</span>` : ''}
+        <span class="rmeta">${evs.length} ev${t.total ? ' · ' + tok(t.total) : ''}</span>
+      </div>
+      ${open ? `<div class="run-body">
+        ${r.prompt ? `<div class="run-prompt">${esc(r.prompt)}</div>` : ''}
+        <div class="run-facts">
+          <span>run <b class="mono">${esc(r.runId)}</b></span>
+          ${r.model ? `<span>model <b>${esc(r.model)}</b></span>` : ''}
+          ${t.total ? `<span>tokens <b>${tok(t.input)} in</b> · <b>${tok(t.output)} out</b>${
+            t.cache ? ` · <b>${tok(t.cache)}</b> cached` : ''}</span>` : ''}
+          <span>${esc(exact(r.startedAt))}</span>
+        </div>
+        ${renderEvents(evs)}
+      </div>` : ''}
+    </div>`;
+  }).join('');
+
+  return `<div>${head}<div class="session">${blocks}
+    ${running && state.showResume ? `<div class="resume-wrap">
+      <button class="resume-btn" data-act="resume">↓ Resume following</button></div>` : ''}
+  </div></div>`;
+}
+
+function renderEvents(evs) {
+  const rows = evs.map((e) => {
     const tm = typeMeta(e.type);
-    const key = String(e.seq != null ? e.seq : i);
+    const key = String(e.seq != null ? e.seq : e._i);
     const open = !!state.expandedEv[key];
     const summary = e.summary || '';
     const isErr = /^(ERROR|FATAL)/.test(summary);
     return `<div>
       <div class="event-line" data-act="toggle-ev" data-key="${esc(key)}">
-        <span class="seq">${esc(String(e.seq != null ? e.seq : i + 1))}</span>
+        <span class="seq">${esc(String(e.seq != null ? e.seq : e._i + 1))}</span>
         <span class="time" title="${esc(exact(e.ts))}">${hms(e.ts)}</span>
         <span class="type" style="background:${tm.bg};color:${tm.color}">${esc(tm.label)}</span>
         <span class="summary${isErr ? ' err' : ''}">${esc(summary)}</span>
@@ -871,11 +981,7 @@ function viewReplay(agent, sessionId) {
       ${open ? `<pre>${esc(JSON.stringify(e.data || {}, null, 2))}</pre>` : ''}
     </div>`;
   }).join('');
-
-  return `<div>${head}<div class="events">${events}
-    ${running && state.showResume ? `<div class="resume-wrap">
-      <button class="resume-btn" data-act="resume">↓ Resume following</button></div>` : ''}
-  </div></div>`;
+  return `<div class="events" style="padding:4px 8px 6px">${rows}</div>`;
 }
 
 // Layered layout. Agents that only delegate go left, agents that are only
@@ -1016,9 +1122,9 @@ function memoryTabs(active) {
     `<button class="tab${active === id ? ' active' : ''}" data-act="tab" data-tab="${id === 'writes' ? '' : id}">${label}</button>`).join('');
 }
 
-// What actually changed, and when. This is the console's own observation:
-// OpenClaw records nothing about memory writes, so anything before this
-// console started watching is simply not knowable.
+// What actually changed, and when. Every entry carries the lines that appeared:
+// OpenClaw records nothing about memory writes, so a claim that an agent wrote
+// something is only worth making when the diff is there to back it up.
 function viewMemoryWrites() {
   const rows = (state.observed || []).map((e) => {
     const m = e.agent ? agentMeta(e.agent) : null;
@@ -1027,84 +1133,216 @@ function viewMemoryWrites() {
       <div class="mem-group-head" style="cursor:default">
         <span class="chip" style="background:var(--ok-bg);color:var(--ok)">+${e.added}</span>
         ${e.removed ? `<span class="chip" style="background:var(--err-bg);color:var(--err)">−${e.removed}</span>` : ''}
-        <span class="mem-path">${esc(e.notePath)}</span>
+        ${e.created ? `<span class="chip" style="background:var(--purple-bg);color:var(--purple)"
+          title="This note did not exist at the previous observation.">new note</span>` : ''}
+        <a class="mem-path" href="#/memory?tab=notes&note=${encodeURIComponent(e.notePath)}">${esc(e.notePath)}</a>
         <span class="grow"></span>
         ${m ? `<span>${m.emoji} ${esc(m.title)}</span>` : '<span style="color:var(--sub)">shared</span>'}
         <span class="when" title="${esc(exact(e.ts))}">${rel(e.ts, state.now)}</span>
       </div>
-      ${lines.length ? `<pre class="mono" style="margin:0;padding:10px 16px 14px 42px;white-space:pre-wrap;font-size:12px;line-height:1.55;color:var(--ok)">${lines.map((l) => esc(l)).join('\n')}</pre>` : ''}
+      ${lines.length ? `<div class="diff">${lines.map((l) => `<div class="line">${esc(l)}</div>`).join('')}
+        ${e.truncated ? `<div class="rest">…and ${e.truncated} more added line${e.truncated === 1 ? '' : 's'}, withheld to keep the feed readable.</div>` : ''}
+      </div>` : ''}
     </div>`;
   }).join('');
 
-  return `<div class="page narrow">
+  return `<div class="page">
     <div class="page-head">
       <h1>Memory</h1>
       <span style="color:var(--sub);font-size:13px">what the agents wrote, and when</span>
     </div>
     <div class="card clip"><div class="tabs">${memoryTabs('writes')}</div></div>
+    ${state.watchingSince ? `<div class="watch-note">Watching since
+      <b title="${esc(exact(state.watchingSince))}">${rel(state.watchingSince, state.now)}</b>.
+      ${state.memPersistent
+        ? 'The record is stored, so it survives restarts and covers writes made while nobody was looking.'
+        : 'No state directory is configured, so this record is held in memory and is lost on restart.'}</div>` : ''}
     ${rows || `<div class="empty-state"><div class="icon">👁️</div>
-      <h2 class="display">No writes observed yet</h2>
-      <p>OpenClaw records nothing about memory writes, so this console detects them by
-      watching the notes change. It has not seen a change yet — writes that happened before
-      it started watching cannot be recovered. Every note already on disk is under
-      <b>All notes</b>.</p></div>`}
+      <h2 class="display">${state.watchingSince ? 'No writes observed yet' : 'Not watching yet'}</h2>
+      <p>OpenClaw records nothing about memory writes, so this console detects them by comparing
+      each note against the last content it saw${state.watchingSince ? `, which it first recorded ${rel(state.watchingSince, state.now)}` : ''}.
+      Only changes it can show a diff for appear here. Every note on disk is under <b>All notes</b>.</p></div>`}
   </div>`;
+}
+
+/* ------------------------------------------------------------- notes tree */
+
+// The notes are a filesystem, so they are shown as one. A flat list ordered by
+// mtime made it impossible to see the shape of what an agent knows — which
+// stores exist, which agent owns which, how a day's notes relate to the wiki.
+
+// buildTree turns flat paths into nested directories. Files carry the note
+// record so a row can show who wrote it and when.
+function buildTree(notes) {
+  const root = { dirs: new Map(), files: [], latest: 0, count: 0 };
+  notes.forEach((w) => {
+    const parts = String(w.notePath).split('/');
+    const file = parts.pop();
+    let node = root;
+    node.count++;
+    node.latest = Math.max(node.latest, ms(w.ts));
+    parts.forEach((seg) => {
+      if (!node.dirs.has(seg)) node.dirs.set(seg, { dirs: new Map(), files: [], latest: 0, count: 0 });
+      node = node.dirs.get(seg);
+      node.count++;
+      node.latest = Math.max(node.latest, ms(w.ts));
+    });
+    node.files.push({ ...w, name: file });
+  });
+  return root;
+}
+
+// dirOpen decides whether a directory shows its children. Ancestors of the
+// selected note are always open, so a link to a deep note lands with the path
+// to it visible rather than collapsed.
+function dirOpen(prefix, selected) {
+  if (state.expandedDirs[prefix] !== undefined) return state.expandedDirs[prefix];
+  if (selected && (selected + '/').startsWith(prefix + '/')) return true;
+  return prefix.split('/').length <= 2;
+}
+
+function renderTree(node, prefix, selected, depth) {
+  const pad = 8 + depth * 13;
+  const dirs = [...node.dirs.entries()].sort((a, b) => b[1].latest - a[1].latest);
+  const files = node.files.slice().sort((a, b) => ms(b.ts) - ms(a.ts));
+
+  const dirRows = dirs.map(([name, child]) => {
+    const path = prefix ? prefix + '/' + name : name;
+    const open = dirOpen(path, selected);
+    return `<div>
+      <div class="tnode tdir" style="padding-left:${pad}px" data-act="toggle-dir" data-dir="${esc(path)}">
+        <span class="tcaret">${open ? '▾' : '▸'}</span>
+        <span class="tname">${esc(name)}</span>
+        <span class="tcount">${child.count}</span>
+      </div>
+      ${open ? renderTree(child, path, selected, depth + 1) : ''}
+    </div>`;
+  }).join('');
+
+  const fileRows = files.map((f) => {
+    const on = f.notePath === selected;
+    return `<a class="tnode tfile${on ? ' on' : ''}" style="padding-left:${pad + 13}px"
+       href="#/memory?tab=notes&note=${encodeURIComponent(f.notePath)}">
+      <span class="tname">${esc(f.name)}</span>
+      <span class="twhen" title="${esc(exact(f.ts))}">${rel(f.ts, state.now)}</span>
+    </a>`;
+  }).join('');
+
+  return dirRows + fileRows;
+}
+
+// A deliberately small markdown renderer. Input is agent-written and untrusted,
+// so everything is escaped first and only then given structure — no raw HTML
+// from a note ever reaches the page.
+function renderMarkdown(src) {
+  let text = String(src || '');
+  let front = '';
+  const fm = text.match(/^---\n([\s\S]*?)\n---\n?/);
+  if (fm) {
+    front = fm[1];
+    text = text.slice(fm[0].length);
+  }
+
+  const blocks = [];
+  // Fenced code is lifted out before anything else touches it.
+  text = text.replace(/```[^\n]*\n([\s\S]*?)```/g, (_, code) =>
+    ` ${blocks.push(`<pre class="md-code">${esc(code.replace(/\n$/, ''))}</pre>`) - 1} `);
+
+  const inline = (s) => esc(s)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]/g, '<span class="md-wl">$1</span>')
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<span class="md-wl">$1</span>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+
+  const out = [];
+  let list = null;
+  const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+
+  text.split('\n').forEach((raw) => {
+    const line = raw.replace(/\s+$/, '');
+    const ph = line.match(/^ (\d+) $/);
+    if (ph) { closeList(); out.push(blocks[+ph[1]]); return; }
+    if (!line.trim()) { closeList(); return; }
+
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) { closeList(); out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); return; }
+    if (/^(---+|\*\*\*+)$/.test(line.trim())) { closeList(); out.push('<hr>'); return; }
+    const q = line.match(/^>\s?(.*)$/);
+    if (q) { closeList(); out.push(`<blockquote>${inline(q[1])}</blockquote>`); return; }
+
+    const ul = line.match(/^\s*[-*+]\s+(.*)$/);
+    const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (ul || ol) {
+      const want = ul ? 'ul' : 'ol';
+      if (list !== want) { closeList(); out.push(`<${want}>`); list = want; }
+      out.push(`<li>${inline((ul || ol)[1])}</li>`);
+      return;
+    }
+    closeList();
+    out.push(`<p>${inline(line)}</p>`);
+  });
+  closeList();
+
+  return (front ? `<details class="md-front"><summary>frontmatter</summary><pre>${esc(front)}</pre></details>` : '')
+    + out.join('\n');
 }
 
 function viewMemoryNotes() {
   const { q } = route();
-  const fa = q.agent || '';
-  const fp = q.path || '';
-  const ws = state.memory.filter((w) => (!fa || w.agent === fa) && (!fp || String(w.notePath).startsWith(fp)));
+  const selected = q.note || '';
+  const search = (q.q || '').toLowerCase();
+  const notes = state.memory.filter((w) =>
+    !search || String(w.notePath).toLowerCase().includes(search));
 
-  const groups = {};
-  ws.forEach((w) => { (groups[w.notePath] = groups[w.notePath] || []).push(w); });
-  const paths = Object.keys(groups).sort((a, b) =>
-    Math.max(...groups[b].map((w) => ms(w.ts))) - Math.max(...groups[a].map((w) => ms(w.ts))));
+  const tree = buildTree(notes);
+  const shown = state.memory.length;
+  const total = state.memoryTotal || shown;
 
-  const agentOptions = [`<option value=""${!fa ? ' selected' : ''}>All agents</option>`].concat(
-    state.agents.map((a) => `<option value="${esc(a.name)}"${fa === a.name ? ' selected' : ''}>${a.emoji || '🤖'} ${esc(a.title || a.name)}</option>`)).join('');
-
-  const body = paths.map((p, i) => {
-    const list = groups[p].slice().sort((a, b) => ms(b.ts) - ms(a.ts));
-    const open = state.expandedMem[p] !== undefined ? state.expandedMem[p] : i === 0;
-    const emojis = [...new Set(list.map((w) => agentMeta(w.agent).emoji))].join(' ');
-    const writes = open ? list.map((w) => `<div class="mem-write">
-        <div class="mem-write-meta">
-          <span>${agentLink(w.agent)}</span>
-          <span class="chip" style="${w.tool === 'write' ? 'background:var(--ok-bg);color:var(--ok)' : 'background:var(--info-bg);color:var(--info)'}">${esc(w.tool || 'tool')}</span>
-          <span class="when" title="${esc(exact(w.ts))}">${rel(w.ts, state.now)}</span>
-          <span class="grow"></span>
-          ${w.sessionId ? `<a href="#/agents/${encodeURIComponent(w.agent)}/sessions/${encodeURIComponent(w.sessionId)}" style="white-space:nowrap">session ↗</a>` : ''}
-        </div>
-        <pre>${esc(w.content || '')}</pre>
-      </div>`).join('') : '';
-    return `<div class="card clip">
-      <div class="mem-group-head" data-act="toggle-mem" data-path="${esc(p)}">
-        <span class="mem-caret">${open ? '▾' : '▸'}</span>
-        <span class="mem-path">${esc(p)}</span>
-        <span class="mem-count">${list.length}</span>
-        <span style="font-size:13px">${emojis}</span>
+  let reader;
+  if (!selected) {
+    reader = `<div class="empty-state" style="margin:24px"><div class="icon">📄</div>
+      <h2 class="display">Pick a note</h2>
+      <p>Every durable note this Claw holds is on the left: the shared
+      <span class="mono">workspace/memory</span> and <span class="mono">workspace/wiki</span> stores,
+      and each agent's own consolidation output.</p></div>`;
+  } else {
+    loadNote(selected);
+    const body = state.noteContent[selected];
+    const note = state.memory.find((w) => w.notePath === selected);
+    const owner = note && note.agent ? agentMeta(note.agent) : null;
+    reader = `<div class="reader-head">
+        <span class="reader-title">${esc(selected.split('/').pop())}</span>
+        ${owner ? `<span class="chip" style="background:var(--surface2);color:var(--sub)">${owner.emoji} ${esc(owner.title)}</span>`
+          : '<span class="chip" style="background:var(--surface2);color:var(--sub)">shared</span>'}
+        ${note ? `<span class="when" title="${esc(exact(note.ts))}">${rel(note.ts, state.now)}</span>` : ''}
         <span class="grow"></span>
-        <span class="when">latest ${rel(list[0].ts, state.now)}</span>
+        <span class="mono reader-path">${esc(selected)}</span>
       </div>
-      ${writes}
-    </div>`;
-  }).join('');
+      ${body === undefined
+        ? '<div class="loading">Reading…</div>'
+        : `<article class="md">${renderMarkdown(body)}</article>`}`;
+  }
 
-  return `<div class="page narrow">
-    <div class="card clip"><div class="tabs">${memoryTabs('notes')}</div></div>
+  return `<div class="page">
     <div class="page-head">
-      <h1>All notes</h1>
-      <span style="color:var(--sub);font-size:13px">every note on disk, newest first</span>
-      <span class="spacer"></span>
-      <select class="field" data-act="mem-agent">${agentOptions}</select>
-      <input class="field path" data-act="mem-path" placeholder="Filter by path prefix, e.g. memory-map/tasks/" value="${esc(fp)}">
+      <h1>Memory</h1>
+      <span style="color:var(--sub);font-size:13px">every note this Claw holds</span>
     </div>
-    ${ws.length === 0 ? `<div class="empty-state"><div class="icon">📓</div>
-      <h2 class="display">No memory writes found</h2>
-      <p>Writes are detected from tool.call events touching <span class="mono">memory-map/**/*.md</span>.
-         Adjust the filters or wait for agents to commit notes.</p></div>` : body}
+    <div class="card clip"><div class="tabs">${memoryTabs('notes')}</div></div>
+    ${shown < total ? `<div class="watch-note">Showing the ${shown} most recently written of
+      ${total} notes.</div>` : ''}
+    <div class="notes-layout">
+      <aside class="tree">
+        <div class="tree-search">
+          <input placeholder="Filter by path…" data-act="mem-search" value="${esc(q.q || '')}">
+        </div>
+        ${notes.length
+          ? `<div class="tree-body">${renderTree(tree, '', selected, 0)}</div>`
+          : `<div class="gc-hint" style="padding:14px">No note path matches that filter.</div>`}
+      </aside>
+      <section class="reader">${reader}</section>
+    </div>
   </div>`;
 }
 
@@ -1139,17 +1377,23 @@ const sim = {
 
 // buildSim lays out nodes on a ring as a starting point; the simulation takes
 // over from there. Sources are included only for pages the user expanded.
+//
+// Nodes are keyed by the server's `key`, never by `id`. Index pages carry no
+// frontmatter and so have no id: keying on it collapsed all four onto the empty
+// string, and every edge naming one by path then failed to resolve and was
+// dropped, which is what made the index pages render as orphans.
 function buildSim(w) {
   const key = state.namespace + '/' + state.claw;
   const pages = w.pages || [];
+  const nkey = (p) => p.key || p.id || p.path;
   const wanted = [];
   pages.forEach((p) => wanted.push(p));
   Object.keys(state.wikiExpanded).forEach((id) => {
-    const parent = pages.find((p) => p.id === id);
+    const parent = pages.find((p) => nkey(p) === id);
     if (!parent) return;
     (parent.sourceIds || []).forEach((sid) => {
       const src = (w.sources || {})[sid];
-      if (src && !wanted.some((n) => n.id === sid)) wanted.push(src);
+      if (src && !wanted.some((n) => nkey(n) === nkey(src))) wanted.push(src);
     });
   });
 
@@ -1160,11 +1404,11 @@ function buildSim(w) {
   const R = Math.max(160, Math.min(cx, cy) - 60, wanted.length * 11);
   sim.nodes = wanted.map((p, i) => {
     const a = (i / Math.max(1, wanted.length)) * Math.PI * 2;
-    const old = prev[p.id];
+    const old = prev[nkey(p)];
     return {
-      id: p.id, path: p.path, type: p.pageType || 'page',
-      label: p.title || p.id,
-      short: (p.title || p.id).length > 26 ? (p.title || p.id).slice(0, 25) + '…' : (p.title || p.id),
+      id: nkey(p), path: p.path, type: p.pageType || 'page',
+      label: p.title || nkey(p),
+      short: (p.title || nkey(p)).length > 26 ? (p.title || nkey(p)).slice(0, 25) + '…' : (p.title || nkey(p)),
       r: p.pageType === 'source' ? 4.5 : p.pageType === 'index' ? 6
         : (p.pageType === 'concept' || p.pageType === 'entity') ? 9 : 7,
       x: old ? old.x : cx + R * Math.cos(a), y: old ? old.y : cy + R * Math.sin(a),
@@ -1460,6 +1704,11 @@ function viewWiki() {
           <span style="font-size:12.5px;color:var(--sub)">Show labels</span>
           <span class="toggle${sim.showLabels ? ' on' : ''}"><span class="knob"></span></span>
         </div>
+        <div class="gc-toggle" data-act="wiki-type" data-type="index" style="margin-top:8px"
+             title="Index pages are generated tables of contents. They tie the graph together, but they are scaffolding rather than knowledge.">
+          <span style="font-size:12.5px;color:var(--sub)">Show index pages</span>
+          <span class="toggle${sim.hidden.index ? '' : ' on'}"><span class="knob"></span></span>
+        </div>
         <div class="gc-toggle" data-act="graph-sources" style="margin-top:8px">
           <span style="font-size:12.5px;color:var(--sub)">Expand all sources</span>
           <span class="toggle${Object.keys(state.wikiExpanded).length ? ' on' : ''}"><span class="knob"></span></span>
@@ -1534,7 +1783,7 @@ function render() {
       <span class="mono">${esc(state.dataDir)}/&lt;agent&gt;/sessions/</span>.
       Once an agent writes its first session, it appears here automatically.</p></div></div>`;
   } else if (r.isReplay) {
-    main = viewReplay(r.seg[1], r.seg[3]);
+    main = viewSession(r.seg[1], r.seg[3], r.runId);
   } else if (r.isAgent) {
     main = viewAgent(r.seg[1]);
   } else if (r.isTopology) {
@@ -1560,6 +1809,15 @@ function render() {
     `<div class="body">${renderSidebar(r)}<main class="main" id="main">${main}</main></div>`;
 
   if (r.isReplay && state.follow && isRunningSession(state.session)) scrollToBottom();
+  // Arriving on a run deep in a long session should land on that run, not at
+  // the top of a file it shares with forty others.
+  if (r.isReplay && r.runId && !state.runScrolled) {
+    const el = document.getElementById('run-' + r.runId);
+    if (el) {
+      el.scrollIntoView({ block: 'center' });
+      state.runScrolled = true;
+    }
+  }
   if (r.isWiki) attachGraph();
 }
 
@@ -1620,19 +1878,22 @@ function onClick(e) {
     case 'filter-clear':
       return setQ({ agent: '', outcome: '', q: '', range: '' });
     case 'open-run':
-      location.hash = `#/agents/${encodeURIComponent(el.dataset.agent)}/sessions/${encodeURIComponent(el.dataset.session)}`;
+      location.hash = runHref(el.dataset.agent, el.dataset.session, el.dataset.run);
       return;
+    case 'toggle-run': {
+      const id = el.dataset.run;
+      state.expandedRuns[id] = !state.expandedRuns[id];
+      return render();
+    }
     case 'toggle-ev': {
       const k = el.dataset.key;
       state.expandedEv[k] = !state.expandedEv[k];
       return render();
     }
-    case 'toggle-mem': {
-      const p = el.dataset.path;
-      const cur = state.expandedMem[p] !== undefined
-        ? state.expandedMem[p]
-        : Object.keys(state.expandedMem).length === 0;
-      state.expandedMem[p] = !cur;
+    case 'toggle-dir': {
+      const d = el.dataset.dir;
+      const { q } = route();
+      state.expandedDirs[d] = !dirOpen(d, q.note || '');
       return render();
     }
     case 'follow':
@@ -1667,7 +1928,9 @@ function onClick(e) {
     case 'graph-sources': {
       const on = Object.keys(state.wikiExpanded).length > 0;
       state.wikiExpanded = {};
-      if (!on) (state.wiki.pages || []).forEach((pg) => { state.wikiExpanded[pg.id] = true; });
+      if (!on) (state.wiki.pages || []).forEach((pg) => {
+        state.wikiExpanded[pg.key || pg.id || pg.path] = true;
+      });
       sim.key = '';
       return render();
     }
@@ -1713,8 +1976,7 @@ function onChange(e) {
     case 'filter-agent': return setQ({ agent: el.value });
     case 'filter-range': return setQ({ range: el.value });
     case 'filter-q': return setQ({ q: el.value });
-    case 'mem-agent': return setQ({ agent: el.value });
-    case 'mem-path': return setQ({ path: el.value });
+    case 'mem-search': return setQ({ q: el.value });
     case 'graph-search': sim.search = el.value; return;
     case 'gf-center': sim.forces.center = +el.value; return;
     case 'gf-repel': sim.forces.repel = +el.value; return;
@@ -1748,13 +2010,19 @@ async function onHashChange() {
   const r = route();
   if (r.isReplay) {
     const key = r.seg[1] + '/' + r.seg[3];
+    state.runScrolled = false;
     if (state.sessionKey !== key) {
       state.session = null;
       state.sessionKey = '';
       state.follow = true;
       state.expandedEv = {};
+      state.expandedRuns = {};
       render();
       await loadSession(r.seg[1], r.seg[3]);
+    } else {
+      // Moving between runs of the same session needs no refetch; just let the
+      // newly named run take over as the one that is open.
+      state.expandedRuns = {};
     }
   } else {
     state.session = null;
@@ -1794,7 +2062,7 @@ function start() {
       onChange(e);
       return;
     }
-    if (!el || !['filter-q', 'mem-path'].includes(el.dataset.act)) return;
+    if (!el || !['filter-q', 'mem-search'].includes(el.dataset.act)) return;
     clearTimeout(el._t);
     el._t = setTimeout(() => onChange(e), 250);
   });

@@ -1,0 +1,27 @@
+# What the console has observed about each Claw's memory notes.
+#
+# OpenClaw emits no event when consolidation or wiki synthesis writes a note, so
+# the only way to report what an agent wrote is to remember the previous content
+# and diff against it. Held in process memory that record was lost on every
+# redeploy, and the baseline was silently re-taken — so the memory page reported
+# nothing had happened when in fact the console had forgotten.
+#
+# This is a cache of note content, which means one tenant's memory notes rest on
+# this volume. It is mounted only by the console, in the console's own namespace,
+# and holds nothing a viewer could not already read: reaching a Claw's notes at
+# all requires an exec the API server authorized for that user.
+#
+# Size is generous for what it holds. A Claw's whole memory tree is a few
+# megabytes and the console caps its retained content at 24 MiB per Claw.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agent-console-state
+  labels:
+    app.kubernetes.io/name: agent-console
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

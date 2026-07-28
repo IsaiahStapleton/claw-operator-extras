@@ -44,9 +44,17 @@ type Event struct {
 }
 
 // Tokens aggregates model.completed usage for a run.
+//
+// Total is input+output and nothing else. The provider reports a `total` that
+// also folds in cacheRead and cacheWrite — a single event showed input 1907,
+// output 830, total 202024 — so summing that field across a run overstated
+// what the agent actually produced by roughly fifty times. Cache traffic is
+// real and worth showing, but it is a different quantity, so it gets its own
+// field rather than being quietly added to this one.
 type Tokens struct {
 	Input  int64 `json:"input"`
 	Output int64 `json:"output"`
+	Cache  int64 `json:"cache,omitempty"`
 	Total  int64 `json:"total"`
 }
 
@@ -259,9 +267,11 @@ func deriveRuns(agent, sessionID string, events []Event, now time.Time) []Run {
 			in, out := jsonInt(u["input"]), jsonInt(u["output"])
 			tokens.Input += in
 			tokens.Output += out
-			// per-event total is advisory; fall back to input+output
-			if t := jsonInt(u["total"]); t != 0 {
-				tokens.Total += t
+			tokens.Cache += jsonInt(u["cacheRead"]) + jsonInt(u["cacheWrite"])
+			// A backend that reports only a total still gets counted, but its
+			// figure is never mixed with input+output when both are present.
+			if in == 0 && out == 0 {
+				tokens.Total += jsonInt(u["total"])
 			} else {
 				tokens.Total += in + out
 			}
