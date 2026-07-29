@@ -17,6 +17,11 @@ const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// Reverses esc so a value escaped for display can be matched against the
+// unescaped paths and titles the note index stores.
+const unesc = (s) => String(s ?? '').replace(/&(amp|lt|gt|quot|#39);/g, (_, e) =>
+  ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" }[e]));
+
 // Timestamps arrive as ISO strings; normalize to millis at the boundary so
 // every comparison downstream is numeric.
 function ms(ts) {
@@ -1430,21 +1435,25 @@ function renderMarkdownBody(src, ctx) {
 
   const { resolve, linkTo, idx } = ctx || {};
 
+  // s is escaped up front so no raw note HTML reaches the page; the captured
+  // link groups are therefore already escaped. Resolution matches against the
+  // unescaped path/title the index holds, while the rendered href keeps the
+  // single escaping an attribute needs (escaping it again corrupts the URL).
   const inline = (s) => esc(s)
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     // [[Wikilinks]] name a page by title rather than by path.
     .replace(/\[\[([^\]|#]+)(?:[|#]([^\]]*))?\]\]/g, (m, name, alias) => {
       const label = (alias || name).trim();
-      const path = idx && idx.byTitle[name.trim().toLowerCase()];
+      const path = idx && idx.byTitle[unesc(name).trim().toLowerCase()];
       return path ? linkTo(path, label) : `<span class="md-wl">${label}</span>`;
     })
     .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, target) => {
-      const path = resolve ? resolve(target) : '';
+      const path = resolve ? resolve(unesc(target)) : '';
       if (path) return linkTo(path, label);
       // An off-site link stays a link; anything else is shown as plain text
       // rather than offered as a link that would go nowhere.
       if (/^https?:\/\//i.test(target)) {
-        return `<a class="md-wl" href="${esc(target)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+        return `<a class="md-wl" href="${target}" target="_blank" rel="noopener noreferrer">${label}</a>`;
       }
       return `<span class="md-wl">${label}</span>`;
     })
