@@ -9,6 +9,11 @@ resources:
   - deployment.yaml
   - service.yaml
   - route.yaml
+# This image is not published yet, so an as-is apply lands in ImagePullBackOff.
+# Before release, CI must build and push it (as the deployer's image is), and
+# this should reference a released tag or, better, an immutable digest. Until
+# then, override newName/newTag to a locally built image, or point the
+# ImageStream at an in-cluster BuildConfig.
 images:
   - name: agent-console
     newName: quay.io/redhat-et/agent-console

@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -81,7 +82,11 @@ func kubeAPIServerURL() (string, error) {
 func kubeHTTPClient() (*http.Client, error) {
 	caPEM, err := os.ReadFile(inClusterCAPath)
 	if err != nil {
-		if os.Getenv("KUBE_API_SERVER") != "" {
+		// Falling back to the system roots validates the API server against
+		// public CAs, which for a cluster-internal endpoint is effectively no
+		// validation. Only a dev run may do this, and it is announced.
+		if devMode() && os.Getenv("KUBE_API_SERVER") != "" {
+			log.Printf("WARNING: in-cluster CA unreadable; verifying the API server against system roots (AGENT_CONSOLE_DEV)")
 			return &http.Client{Timeout: 30 * time.Second}, nil
 		}
 		return nil, fmt.Errorf("read Kubernetes CA: %w", err)
@@ -99,8 +104,19 @@ func kubeHTTPClient() (*http.Client, error) {
 }
 
 func kubeBearerToken() (string, bool, error) {
-	if token := strings.TrimSpace(os.Getenv("DEVELOPER_BEARER_TOKEN")); token != "" {
-		return token, strings.EqualFold(os.Getenv("AGENT_CONSOLE_IMPERSONATE"), "true"), nil
+	// A developer token stands in for the service-account token when running
+	// off-cluster, but only in dev mode: in a cluster the console must read as
+	// the logged-in user, never as its own identity. With the token but
+	// impersonation off, every tenant read runs unimpersonated, so that is
+	// announced loudly rather than left silent.
+	if devMode() {
+		if token := strings.TrimSpace(os.Getenv("DEVELOPER_BEARER_TOKEN")); token != "" {
+			impersonate := strings.EqualFold(os.Getenv("AGENT_CONSOLE_IMPERSONATE"), "true")
+			if !impersonate {
+				log.Printf("WARNING: DEVELOPER_BEARER_TOKEN set without AGENT_CONSOLE_IMPERSONATE; tenant reads run as the token's own identity, not the logged-in user")
+			}
+			return token, impersonate, nil
+		}
 	}
 	token, err := os.ReadFile(inClusterTokenPath)
 	if err != nil {

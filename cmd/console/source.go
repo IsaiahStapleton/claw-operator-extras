@@ -41,11 +41,33 @@ const maxSessionFileBytes = 256 << 20
 // maxNoteBytes caps one memory note; notes are prose, not logs.
 const maxNoteBytes = 4 << 20
 
-// safeNotePathRE guards paths interpolated into a tar argument. Notes live in
-// nested directories, so slashes are allowed but traversal is not.
+// maxBatchBytes bounds the total retained from one batched read, since every
+// body is held at once; files past the budget are left unread and reported as
+// unreadable rather than pushing the console past its memory limit.
+const maxBatchBytes = 256 << 20
+
+// safeNotePathRE guards the characters allowed in a path interpolated into a
+// tar argument. Notes live in nested directories, so slashes are allowed.
 var safeNotePathRE = regexp.MustCompile(`^[\w.-]+(?:/[\w.-]+)*$`)
 
-// parseNoteIndex turns absolute find output into home-relative notes.
+// safeNotePath reports whether a path is safe to hand to tar. The character
+// regex alone is not enough: it admits ".." as a segment, so a path like
+// "../../etc/passwd" satisfies it. Every caller relies on this as its only
+// guard, so the traversal check lives here rather than in each caller — a note
+// path that ever reaches this from a request must not be able to escape the
+// Claw home.
+func safeNotePath(p string) bool {
+	if !safeNotePathRE.MatchString(p) {
+		return false
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == ".." {
+			return false
+		}
+	}
+	return true
+}
+
 // parseNoteIndex turns the find output into note records, keeping each file
 // once.
 //
@@ -236,7 +258,7 @@ func (d dirSource) readNotes(_ context.Context, notes []memoryNote) (map[string]
 	home := filepath.Dir(strings.TrimSuffix(d.root, string(filepath.Separator)))
 	out := map[string][]byte{}
 	for _, n := range notes {
-		if !safeNotePathRE.MatchString(n.Path) {
+		if !safeNotePath(n.Path) {
 			continue
 		}
 		if body, err := os.ReadFile(filepath.Join(home, filepath.FromSlash(n.Path))); err == nil {
@@ -325,6 +347,7 @@ func (e execSource) readMany(ctx context.Context, files []sessionFile) (map[stri
 		return out, nil
 	}
 
+	total := 0
 	err := e.srv.execStream(ctx, e.identity, e.namespace, e.pod, e.container, args,
 		func(r io.Reader) error {
 			tr := tar.NewReader(r)
@@ -350,6 +373,9 @@ func (e execSource) readMany(ctx context.Context, files []sessionFile) (map[stri
 					continue
 				}
 				out[batchKey(agent, rest)] = body
+				if total += len(body); total >= maxBatchBytes {
+					return nil
+				}
 			}
 		})
 	if err != nil {
@@ -382,7 +408,7 @@ func (e execSource) readNotes(ctx context.Context, notes []memoryNote) (map[stri
 	args := []string{"tar", "cf", "-", "-C", e.clawHome()}
 	wanted := map[string]bool{}
 	for _, n := range notes {
-		if !safeNotePathRE.MatchString(n.Path) {
+		if !safeNotePath(n.Path) {
 			continue
 		}
 		args = append(args, n.Path)
@@ -391,6 +417,7 @@ func (e execSource) readNotes(ctx context.Context, notes []memoryNote) (map[stri
 	if len(wanted) == 0 {
 		return out, nil
 	}
+	total := 0
 	err := e.srv.execStream(ctx, e.identity, e.namespace, e.pod, e.container, args,
 		func(r io.Reader) error {
 			tr := tar.NewReader(r)
@@ -407,6 +434,9 @@ func (e execSource) readNotes(ctx context.Context, notes []memoryNote) (map[stri
 					continue
 				}
 				out[hdr.Name] = body
+				if total += len(body); total >= maxBatchBytes {
+					return nil
+				}
 			}
 		})
 	return out, err

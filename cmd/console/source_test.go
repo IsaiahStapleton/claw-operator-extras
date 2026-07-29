@@ -57,3 +57,20 @@ func TestNoteIndexKeepsEachFileOnce(t *testing.T) {
 		}
 	}
 }
+
+func TestSafeNotePathRejectsTraversal(t *testing.T) {
+	cases := map[string]bool{
+		"workspace/memory/2026-07-29.md":   true,
+		"stitch/memory/dreaming/deep/x.md": true,
+		"../../etc/passwd":                 false,
+		"workspace/../../../etc/passwd":    false,
+		"a/../b.md":                        false,
+		"/etc/passwd":                      false,
+		"":                                 false,
+	}
+	for p, want := range cases {
+		if got := safeNotePath(p); got != want {
+			t.Errorf("safeNotePath(%q) = %v, want %v", p, got, want)
+		}
+	}
+}

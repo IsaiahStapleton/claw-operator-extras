@@ -67,21 +67,26 @@ type RunView struct {
 // buildRunViews attaches handoff counts and parent edges, matching the Node
 // server's /api/runs enrichment.
 func buildRunViews(runs []Run, edges []Handoff) []RunView {
+	// Indexed once rather than rescanned per run: with the runs limit at 5000
+	// and a comparable edge count on a busy Claw, the nested scan was tens of
+	// millions of comparisons on every /api/runs poll.
+	outBy := map[string]int{}
+	spawnedBy := map[string]*Handoff{}
+	for i := range edges {
+		e := &edges[i]
+		outBy[e.FromSessionID+"\x00"+e.FromRunID]++
+		// Attribution is by sessionId: multi-run sessions share the edge.
+		if _, ok := spawnedBy[e.ToSessionID]; !ok {
+			spawnedBy[e.ToSessionID] = e
+		}
+	}
 	views := make([]RunView, 0, len(runs))
 	for _, r := range runs {
-		out := 0
-		var spawnedBy *Handoff
-		for i := range edges {
-			e := &edges[i]
-			if e.FromSessionID == r.SessionID && e.FromRunID == r.RunID {
-				out++
-			}
-			// Attribution is by sessionId: multi-run sessions share the edge.
-			if spawnedBy == nil && e.ToSessionID == r.SessionID {
-				spawnedBy = e
-			}
-		}
-		views = append(views, RunView{Run: r, HandoffsOut: out, SpawnedBy: spawnedBy})
+		views = append(views, RunView{
+			Run:         r,
+			HandoffsOut: outBy[r.SessionID+"\x00"+r.RunID],
+			SpawnedBy:   spawnedBy[r.SessionID],
+		})
 	}
 	return views
 }

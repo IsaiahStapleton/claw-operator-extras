@@ -76,9 +76,13 @@ type server struct {
 	stateDir string
 
 	// Stores are per (user, namespace, claw): the cache must never be shared
-	// across users, or one tenant's snapshot could be served to another.
-	mu     sync.Mutex
-	stores map[string]*Store
+	// across users, or one tenant's snapshot could be served to another. Every
+	// distinct viewer and every pod restart mints a new key, so idle stores are
+	// reaped to bound memory in a long-lived multi-tenant console. storeSeen is
+	// guarded by mu.
+	mu        sync.Mutex
+	stores    map[string]*Store
+	storeSeen map[string]time.Time
 	// Watchers are per Claw, not per user. What a Claw's notes did is a fact
 	// about the Claw; sharing the observation is what lets one user see a diff
 	// the console happened to catch while another was looking. Reaching a
@@ -92,6 +96,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	go s.reapIdleStores()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -132,8 +137,10 @@ func newServer() (*server, error) {
 	hostname, _ := os.Hostname()
 
 	var excluded []string
-	if raw := os.Getenv("EXCLUDED_AGENTS"); raw != "" {
-		excluded = strings.Split(raw, ",")
+	for _, a := range strings.Split(os.Getenv("EXCLUDED_AGENTS"), ",") {
+		if a = strings.TrimSpace(a); a != "" {
+			excluded = append(excluded, a)
+		}
 	}
 
 	s := &server{
@@ -147,6 +154,7 @@ func newServer() (*server, error) {
 		static:    sub,
 		stateDir:  os.Getenv("CONSOLE_STATE_DIR"),
 		stores:    map[string]*Store{},
+		storeSeen: map[string]time.Time{},
 		watchers:  map[string]*memoryWatcher{},
 	}
 	// An unwritable state directory is reported and then ignored: the console
@@ -181,6 +189,10 @@ func (s *server) storeFor(identity userIdentity, namespace, claw, pod string) *S
 	key := identity.Name + "\x00" + namespace + "\x00" + claw + "\x00" + pod
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.storeSeen == nil {
+		s.storeSeen = map[string]time.Time{}
+	}
+	s.storeSeen[key] = time.Now()
 	if st, ok := s.stores[key]; ok {
 		return st
 	}
@@ -191,6 +203,29 @@ func (s *server) storeFor(identity userIdentity, namespace, claw, pod string) *S
 	st := newStoreFromSource(src, s.cacheTTL, s.excluded, s.watcherFor(namespace, claw))
 	s.stores[key] = st
 	return st
+}
+
+// storeIdleTTL is how long a per-viewer store may sit unused before it is
+// reaped. Its parsed-session cache is rebuilt on next access, so eviction costs
+// one cold scan, not correctness.
+const storeIdleTTL = 30 * time.Minute
+
+// reapIdleStores drops stores no request has touched within storeIdleTTL, so a
+// long-lived console does not accumulate one Store per distinct viewer and pod
+// name forever. Watchers are left alone: they are per Claw, not per viewer, and
+// already bounded.
+func (s *server) reapIdleStores() {
+	for range time.Tick(storeIdleTTL / 3) {
+		cutoff := time.Now().Add(-storeIdleTTL)
+		s.mu.Lock()
+		for key, seen := range s.storeSeen {
+			if seen.Before(cutoff) {
+				delete(s.stores, key)
+				delete(s.storeSeen, key)
+			}
+		}
+		s.mu.Unlock()
+	}
 }
 
 // watcherFor returns the shared memory watcher for one Claw. Callers hold s.mu.

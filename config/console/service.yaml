@@ -7,10 +7,14 @@ metadata:
 spec:
   selector:
     app.kubernetes.io/name: agent-console
+  # Only the oauth-proxy port is exposed. The app's 8080 is reached by the
+  # proxy over pod loopback and by the kubelet's probes on the pod IP directly;
+  # exposing it through the Service would let an in-cluster caller reach the
+  # console without passing the proxy that establishes identity, and the app
+  # trusts the identity headers the proxy sets. Kept off the Service so that
+  # bypass does not exist. A metrics scraper, if one is added, should reach
+  # 8080 on the pod paired with a NetworkPolicy, not via this Service.
   ports:
     - name: oauth
       port: 4180
       targetPort: oauth
-    - name: http
-      port: 8080
-      targetPort: http

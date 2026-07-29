@@ -19,6 +19,7 @@ package main
 import (
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // Frontmatter shape taken from a real page in podling's wiki.
@@ -268,5 +269,17 @@ func TestBodyLinksConnectPagesIncludingIndexes(t *testing.T) {
 	}
 	if g.Counts["index"] != 1 {
 		t.Fatalf("counts = %v, want the untyped page counted as an index", g.Counts)
+	}
+}
+
+func TestTitleCaseHandlesNonASCII(t *testing.T) {
+	// A byte-slice uppercase would split the leading multi-byte rune and emit
+	// invalid UTF-8; titleCase must operate on runes.
+	got := titleCase("élan über café")
+	if got != "Élan Über Café" {
+		t.Fatalf("titleCase = %q, want %q", got, "Élan Über Café")
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("titleCase produced invalid UTF-8: %q", got)
 	}
 }

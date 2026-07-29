@@ -31,6 +31,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -272,7 +273,9 @@ func titleFromPath(p string) string {
 func titleCase(s string) string {
 	words := strings.Fields(s)
 	for i, w := range words {
-		words[i] = strings.ToUpper(w[:1]) + w[1:]
+		r := []rune(w)
+		r[0] = unicode.ToUpper(r[0])
+		words[i] = string(r)
 	}
 	return strings.Join(words, " ")
 }
@@ -332,15 +335,17 @@ func buildWikiGraph(pages []WikiPage) WikiGraph {
 		}
 	}
 
+	// byPath resolves body links, and is built only from pages that became
+	// nodes: a link to a claim page or an id-less source, which enter neither
+	// graph.Pages nor graph.Sources, would otherwise draw an edge to no node.
 	known := map[string]bool{}
+	byPath := map[string]WikiPage{}
 	for _, p := range graph.Pages {
 		known[p.ID] = true
-	}
-	// Body links resolve by path, so index the whole wiki that way too — an
-	// index page has no frontmatter id but is still a legitimate link target.
-	byPath := map[string]WikiPage{}
-	for _, p := range pages {
 		byPath[p.Path] = p
+	}
+	for _, s := range graph.Sources {
+		byPath[s.Path] = s
 	}
 	seen := map[string]bool{}
 	addEdge := func(from, to, kind string, weight, confidence float64) {

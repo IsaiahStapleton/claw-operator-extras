@@ -187,3 +187,30 @@ func TestDiffLinesCountsRemovals(t *testing.T) {
 		t.Fatalf("removed = %d, want 1 (b is gone)", removed)
 	}
 }
+
+// Trimming a note to reclaim memory must keep its identity, or the next observe
+// sees it as unseen and re-announces a long-lived note as freshly created.
+func TestTrimKeepsNoteIdentity(t *testing.T) {
+	w := newMemoryWatcher("")
+	line := strings.Repeat("x", 1<<20)
+	lines := make([]string, 40) // 40 MiB, past maxWatchedBytes
+	for i := range lines {
+		lines[i] = line
+	}
+	w.notes = map[string]noteSnapshot{
+		"workspace/memory/old.md": {ModTime: 1, Size: 100, Lines: lines},
+	}
+
+	w.trim()
+
+	snap, ok := w.notes["workspace/memory/old.md"]
+	if !ok {
+		t.Fatal("trim deleted the note; a later observe would report it as newly created")
+	}
+	if snap.Lines != nil {
+		t.Fatalf("trim should drop content, kept %d lines", len(snap.Lines))
+	}
+	if snap.ModTime != 1 || snap.Size != 100 {
+		t.Fatalf("trim must keep identity, got %+v", noteSnapshot{ModTime: snap.ModTime, Size: snap.Size})
+	}
+}

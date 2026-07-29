@@ -48,6 +48,7 @@ func fixtureRoot(t *testing.T) string {
 }
 
 func fixtureRootWithNotes(t *testing.T, now time.Time) string {
+	t.Helper()
 	root := makeDataDir(t, map[string]map[string][]string{
 		"main": {"sess-parent": {
 			ev("session.started", evOpts{TS: iso(now.Add(-20 * time.Minute))}),
@@ -487,5 +488,53 @@ func TestParseAgentMetaIgnoresInvalidJSON(t *testing.T) {
 	got := parseAgentMeta(`{"main":{"emoji":"🌱","title":"Podling","desc":"Coordinator"}}`)
 	if got["main"].Title != "Podling" {
 		t.Fatalf("parsed meta = %+v", got)
+	}
+}
+
+func TestValidateName(t *testing.T) {
+	long := strings.Repeat("a", 254)
+	cases := []struct {
+		name string
+		ok   bool
+	}{
+		{"isaiah-claw", true},
+		{"podling", true},
+		{"a1-2b", true},
+		{"", false},
+		{"Uppercase", false},
+		{"..", false},
+		{"a/b", false},
+		{"-lead", false},
+		{"trail-", false},
+		{long, false},
+	}
+	for _, tc := range cases {
+		err := validateName("namespace", tc.name)
+		if (err == nil) != tc.ok {
+			t.Errorf("validateName(%q) err=%v, want ok=%v", tc.name, err, tc.ok)
+		}
+		if err != nil && statusCodeFor(err) != http.StatusBadRequest {
+			t.Errorf("validateName(%q) status = %d, want 400", tc.name, statusCodeFor(err))
+		}
+	}
+}
+
+// resolveStore is where the security model is enforced: no forwarded identity
+// is a 401, a malformed namespace or claw is a 400, both before any cluster
+// call is made.
+func TestResolveStoreRejectsBadRequestsBeforeAnyClusterCall(t *testing.T) {
+	s := &server{stores: map[string]*Store{}} // cluster mode: localDir is empty
+
+	req := httptest.NewRequest("GET", "/api?namespace=isaiah-claw&claw=podling", nil)
+	if _, err := s.resolveStore(req); statusCodeFor(err) != http.StatusUnauthorized {
+		t.Fatalf("missing identity: status = %d, want 401", statusCodeFor(err))
+	}
+
+	for _, q := range []string{"namespace=Bad_NS&claw=podling", "namespace=isaiah-claw&claw=..%2f"} {
+		req := httptest.NewRequest("GET", "/api?"+q, nil)
+		req.Header.Set("X-Forwarded-User", "alice")
+		if _, err := s.resolveStore(req); statusCodeFor(err) != http.StatusBadRequest {
+			t.Fatalf("%q: status = %d, want 400", q, statusCodeFor(err))
+		}
 	}
 }

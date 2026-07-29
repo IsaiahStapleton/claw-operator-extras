@@ -2048,6 +2048,7 @@ function render() {
   root.innerHTML = renderMasthead() + banner +
     `<div class="body">${renderSidebar(r)}
       <main class="main" id="main" data-scroll-key="${esc(mainKey)}">${main}</main></div>`;
+  makeActionable(root);
   restoreScroll(saved);
 
   if (r.isReplay && state.follow && isRunningSession(state.session)) scrollToBottom();
@@ -2107,6 +2108,32 @@ function scrollToBottom() {
 }
 
 /* ------------------------------------------------------------- interaction */
+
+// Native controls (a, button, select, sliders, text inputs) are focusable and
+// key-activated already; only the delegated data-act elements built on div/tr/g
+// need help.
+const NATIVE_FOCUSABLE = /^(A|BUTTON|INPUT|SELECT|TEXTAREA)$/;
+const NATIVE_ACTS = new Set(['graph-search', 'gf-center', 'gf-repel', 'gf-link', 'gf-dist',
+  'filter-q', 'mem-search', 'scope', 'filter-agent', 'filter-range', 'mem-agent']);
+
+// Give every click target a keyboard equivalent: make it focusable and let
+// Enter/Space reach the same dispatcher, so expanding a run, opening an event,
+// or walking the note tree does not require a mouse.
+function makeActionable(root) {
+  root.querySelectorAll('[data-act]').forEach((el) => {
+    if (NATIVE_FOCUSABLE.test(el.tagName) || el.hasAttribute('tabindex') || NATIVE_ACTS.has(el.dataset.act)) return;
+    el.setAttribute('tabindex', '0');
+    el.setAttribute('role', 'button');
+  });
+}
+
+function onKeydown(e) {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const el = e.target.closest('[data-act]');
+  if (!el || NATIVE_FOCUSABLE.test(el.tagName) || NATIVE_ACTS.has(el.dataset.act)) return;
+  e.preventDefault();
+  onClick(e);
+}
 
 function onClick(e) {
   const el = e.target.closest('[data-act]');
@@ -2334,6 +2361,19 @@ async function tick() {
   render();
 }
 
+// Each refresh is five impersonated exec reads that routinely outrun the 5s
+// interval on a busy Claw. A self-scheduling loop that waits for tick() to
+// finish before arming the next one stops requests stacking up and landing out
+// of order.
+function scheduleTick(delay) {
+  setTimeout(async () => {
+    if (!document.hidden) {
+      try { await tick(); } catch { /* next tick retries */ }
+    }
+    scheduleTick(5000);
+  }, delay);
+}
+
 function start() {
   try {
     const t = localStorage.getItem('ac-theme');
@@ -2342,6 +2382,7 @@ function start() {
   document.documentElement.setAttribute('data-ac-theme', state.theme);
 
   document.addEventListener('click', onClick);
+  document.addEventListener('keydown', onKeydown);
   document.addEventListener('change', onChange);
   document.addEventListener('input', (e) => {
     // Debounce free-text filters so each keystroke doesn't rewrite the hash.
@@ -2359,7 +2400,7 @@ function start() {
 
   onHashChange();
   tick();
-  setInterval(tick, 5000);
+  scheduleTick(5000);
 }
 
 if (document.readyState === 'loading') {

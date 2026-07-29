@@ -94,7 +94,11 @@ type Store struct {
 	mu      sync.Mutex
 	cached  *Snapshot
 	cachedT time.Time
-	parsed  map[string]parsedSession // "<agent>/<file>" -> parsed content
+	// scanDone is non-nil while a scan runs, so only one scan is in flight at a
+	// time and other callers serve the previous snapshot instead of queueing
+	// behind its exec round trips.
+	scanDone chan struct{}
+	parsed   map[string]parsedSession // "<agent>/<file>" -> parsed content
 	// watch remembers the last content seen per memory note so a change can be
 	// diffed into an actual write event. It is shared by every user viewing the
 	// same Claw and outlives this store, so the record survives a restart.
@@ -123,12 +127,41 @@ func newStore(dataDir string, cacheTTL time.Duration, excludeAgents []string) *S
 
 func (s *Store) snapshot() *Snapshot {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.cached != nil && s.now().Sub(s.cachedT) <= s.cacheTTL {
-		return s.cached
+		c := s.cached
+		s.mu.Unlock()
+		return c
 	}
+	if s.scanDone != nil {
+		// A scan is already running. Serve the last snapshot if there is one,
+		// so a poll never blocks behind another request's exec round trips;
+		// only the very first load, with nothing to serve, waits for it.
+		done, last := s.scanDone, s.cached
+		s.mu.Unlock()
+		if last != nil {
+			return last
+		}
+		<-done
+		s.mu.Lock()
+		c := s.cached
+		s.mu.Unlock()
+		return c
+	}
+
+	done := make(chan struct{})
+	s.scanDone = done
+	s.mu.Unlock()
+
+	// The lock is released across scan(): single-flight makes this scan the
+	// sole accessor of s.parsed, and every concurrent caller took a branch
+	// above that reads neither it nor runs a second scan.
 	snap := s.scan()
+
+	s.mu.Lock()
 	s.cached, s.cachedT = snap, s.now()
+	s.scanDone = nil
+	s.mu.Unlock()
+	close(done)
 	return snap
 }
 
@@ -390,16 +423,6 @@ func applyTranscriptPrompts(msgs []userMessage, runs []Run) {
 			runs[i].PromptSource = "transcript"
 		}
 	}
-}
-
-// readUserMessages pulls timestamped user turns out of a transcript. Content
-// is either a plain string or a block list, depending on the backend.
-func readUserMessages(path string) []userMessage {
-	text, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-	return readUserMessagesFrom(text)
 }
 
 func readUserMessagesFrom(text []byte) []userMessage {
@@ -695,11 +718,14 @@ func (s *Store) memoryFeed(ctx context.Context, limit int) ([]MemoryWrite, int, 
 			NotePath: n.Path,
 			Size:     n.Size,
 		}
-		// Prefer a recorded tool call's agent and session when one exists.
+		// Longest suffix wins: map iteration is randomized, so a shortest-match
+		// or first-match would flip the attributed agent between refreshes when
+		// several recorded paths are suffixes of this note.
+		best := ""
 		for path, w := range attribution {
-			if strings.HasSuffix(n.Path, path) {
+			if strings.HasSuffix(n.Path, path) && len(path) > len(best) {
+				best = path
 				entry.Agent, entry.SessionID, entry.RunID, entry.Tool = w.Agent, w.SessionID, w.RunID, w.Tool
-				break
 			}
 		}
 		out = append(out, entry)

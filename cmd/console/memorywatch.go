@@ -336,10 +336,17 @@ func (w *memoryWatcher) trim() {
 		if total <= maxWatchedBytes {
 			break
 		}
-		for _, l := range w.notes[a.path].Lines {
+		snap := w.notes[a.path]
+		for _, l := range snap.Lines {
 			total -= len(l) + 1
 		}
-		delete(w.notes, a.path)
+		// Keep the note's identity — its mod time and size — and drop only the
+		// content, which is what costs memory. Deleting the whole entry made a
+		// later observe see the note as unseen and announce a months-old note
+		// as freshly created, the exact false claim this file avoids. With the
+		// identity kept, an unchanged note is still recognised and skipped.
+		snap.Lines = nil
+		w.notes[a.path] = snap
 	}
 }
 

@@ -104,6 +104,13 @@ func (s *server) execInPod(ctx context.Context, identity userIdentity, namespace
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
+			// Only a clean close means the output is complete. An abnormal
+			// close — the read limit tripped, the connection dropped —
+			// truncates the file, and handing that back as success is exactly
+			// the silent omission this console exists to refuse.
+			if !normalClose(err) {
+				return nil, fmt.Errorf("exec stream from %s/%s ended abnormally: %w", namespace, pod, err)
+			}
 			break
 		}
 		if len(data) == 0 {
@@ -167,6 +174,14 @@ func (s *server) execStream(ctx context.Context, identity userIdentity, namespac
 		for {
 			_, data, err := conn.Read(ctx)
 			if err != nil {
+				// An abnormal close means the stream this pipe is carrying was
+				// cut short; propagate that to fn as an error rather than a
+				// clean EOF, so a truncated tar is not parsed as complete.
+				if ctx.Err() != nil {
+					execErr = ctx.Err()
+				} else if !normalClose(err) {
+					execErr = fmt.Errorf("exec stream from %s/%s ended abnormally: %w", namespace, pod, err)
+				}
 				break
 			}
 			if len(data) == 0 {
@@ -190,6 +205,20 @@ func (s *server) execStream(ctx context.Context, identity userIdentity, namespac
 	err = fn(pr)
 	_ = pr.CloseWithError(err)
 	return err
+}
+
+// normalClose reports whether a read error is the clean end of a stream the
+// API server closed after the command finished, as opposed to a truncation.
+// A read-limit trip closes with StatusMessageTooBig, a dropped connection
+// carries no close code at all; both must read as abnormal so the caller
+// rejects the shortened output rather than accepting it.
+func normalClose(err error) bool {
+	switch websocket.CloseStatus(err) {
+	case websocket.StatusNormalClosure, websocket.StatusGoingAway:
+		return true
+	default:
+		return false
+	}
 }
 
 // execStatusError decodes the terminal status the API server writes to the

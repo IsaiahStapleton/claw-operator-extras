@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"sync"
 )
 
 // ClawRef identifies one Claw instance the user can read.
@@ -71,23 +72,39 @@ func (s *server) listClaws(ctx context.Context, identity userIdentity) ([]ClawRe
 	if err != nil {
 		return nil, err
 	}
-	// Empty, not nil: this marshals to [] so a client can treat "no access" as
-	// an ordinary empty list rather than a missing field.
+	// A user's project count can run to the hundreds, so the per-namespace
+	// lists run concurrently under a small cap rather than as one serial chain
+	// of round trips on the request goroutine.
 	out := []ClawRef{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, clawListConcurrency)
 	for _, ns := range namespaces {
-		var nsList clawList
-		path := fmt.Sprintf("/apis/%s/%s/namespaces/%s/claws",
-			clawAPIGroup, clawAPIVersion, url.PathEscape(ns))
-		if err := s.kubeGet(ctx, identity, path, &nsList); err != nil {
-			// A namespace the user can see but whose Claws they cannot list is
-			// simply not shown; one such namespace must not hide the rest.
-			continue
-		}
-		out = append(out, clawRefs(nsList)...)
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(ns string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			var nsList clawList
+			path := fmt.Sprintf("/apis/%s/%s/namespaces/%s/claws",
+				clawAPIGroup, clawAPIVersion, url.PathEscape(ns))
+			if err := s.kubeGet(ctx, identity, path, &nsList); err != nil {
+				// A namespace the user can see but whose Claws they cannot list
+				// is simply not shown; one such must not hide the rest.
+				return
+			}
+			refs := clawRefs(nsList)
+			mu.Lock()
+			out = append(out, refs...)
+			mu.Unlock()
+		}(ns)
 	}
+	wg.Wait()
 	sortClawRefs(out)
 	return out, nil
 }
+
+const clawListConcurrency = 12
 
 // visibleNamespaces lists what the user can see, preferring the namespaces API
 // and falling back to OpenShift projects, which is scoped to the caller and so
