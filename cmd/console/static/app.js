@@ -2399,8 +2399,9 @@ function start() {
   window.addEventListener('hashchange', onHashChange);
 
   onHashChange();
-  tick();
-  scheduleTick(5000);
+  // The loop owns the first refresh too; firing tick() separately would let the
+  // scheduled one overlap it when a cold read runs past the interval.
+  scheduleTick(0);
 }
 
 if (document.readyState === 'loading') {
