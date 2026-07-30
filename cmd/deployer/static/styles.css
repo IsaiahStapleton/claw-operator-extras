@@ -355,6 +355,11 @@ code {
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
 }
 
+#credential-body {
+  display: grid;
+  gap: 16px;
+}
+
 .divider {
   height: 1px;
   background: var(--border-subtle);
@@ -468,8 +473,38 @@ code {
   font-size: 14.5px;
 }
 
-.checkbox-field input {
+.checkbox-field input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
   margin-top: 3px;
+}
+
+.help-box {
+  margin-top: 6px;
+}
+
+.help-box summary {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  list-style: none;
+}
+
+.help-box summary::-webkit-details-marker {
+  display: none;
+}
+
+.help-box p {
+  margin-top: 6px;
 }
 
 .or-divider {
@@ -1107,6 +1142,12 @@ code {
   color: var(--success);
   background: var(--success-bg);
   border: 1px solid var(--success-border);
+}
+
+.status-label--idle {
+  color: var(--text-subtle);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
 }
 
 .status-label--deploying {

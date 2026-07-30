@@ -52,19 +52,22 @@ type userIdentity struct {
 }
 
 type provisionRequest struct {
-	Namespace      string `json:"namespace"`
-	Name           string `json:"name"`
-	AgentName      string `json:"agentName"`
-	Model          string `json:"model"`
-	OpenClawImage  string `json:"openClawImage"`
-	Provider       string `json:"provider"`
-	ConfigureAgent bool   `json:"configureAgent"`
-	APIKey         string `json:"apiKey"`
-	SecretName     string `json:"secretName"`
-	SecretKey      string `json:"secretKey"`
-	GCPProject     string `json:"gcpProject"`
-	GCPLocation    string `json:"gcpLocation"`
-	Management     string `json:"management"`
+	Namespace       string `json:"namespace"`
+	Name            string `json:"name"`
+	AgentName       string `json:"agentName"`
+	Model           string `json:"model"`
+	OpenClawImage   string `json:"openClawImage"`
+	Provider        string `json:"provider"`
+	ConfigureAgent  bool   `json:"configureAgent"`
+	APIKey          string `json:"apiKey"`
+	SecretName      string `json:"secretName"`
+	SecretKey       string `json:"secretKey"`
+	GCPProject      string `json:"gcpProject"`
+	GCPLocation     string `json:"gcpLocation"`
+	Management      string `json:"management"`
+	DoctorFix       bool   `json:"doctorFix"`
+	DreamingEnabled *bool  `json:"dreamingEnabled"`
+	WikiEnabled     *bool  `json:"wikiEnabled"`
 
 	// FilesystemSource seeds the Claw filesystem from a Git repository or a
 	// ConfigMap. It maps to spec.agentFiles and is only honored by the operator
@@ -132,24 +135,28 @@ type meResponse struct {
 }
 
 type stateResponse struct {
-	Namespace      string                  `json:"namespace,omitempty"`
-	Name           string                  `json:"name,omitempty"`
-	Exists         bool                    `json:"exists"`
-	Ready          bool                    `json:"ready"`
-	Reason         string                  `json:"reason,omitempty"`
-	Message        string                  `json:"message,omitempty"`
-	GatewayURL     string                  `json:"gatewayURL,omitempty"`
-	Provider       string                  `json:"provider,omitempty"`
-	Providers      []string                `json:"providers,omitempty"`
-	Model          string                  `json:"model,omitempty"`
-	Image          string                  `json:"image,omitempty"`
-	AgentName      string                  `json:"agentName,omitempty"`
-	Management     string                  `json:"management,omitempty"`
-	CreatedAt      string                  `json:"createdAt,omitempty"`
-	SecretNames    []string                `json:"secretNames,omitempty"`
-	CredentialRefs []credentialRefResponse `json:"credentialRefs,omitempty"`
-	Integrations   []integrationResponse   `json:"integrations,omitempty"`
-	ModelProviders []modelProviderResponse `json:"modelProviders,omitempty"`
+	Namespace       string                  `json:"namespace,omitempty"`
+	Name            string                  `json:"name,omitempty"`
+	Exists          bool                    `json:"exists"`
+	Ready           bool                    `json:"ready"`
+	Reason          string                  `json:"reason,omitempty"`
+	Message         string                  `json:"message,omitempty"`
+	GatewayURL      string                  `json:"gatewayURL,omitempty"`
+	Provider        string                  `json:"provider,omitempty"`
+	Providers       []string                `json:"providers,omitempty"`
+	Model           string                  `json:"model,omitempty"`
+	Image           string                  `json:"image,omitempty"`
+	AgentName       string                  `json:"agentName,omitempty"`
+	Management      string                  `json:"management,omitempty"`
+	DoctorFix       bool                    `json:"doctorFix"`
+	DreamingEnabled bool                    `json:"dreamingEnabled"`
+	WikiEnabled     bool                    `json:"wikiEnabled"`
+	Idle            bool                    `json:"idle"`
+	CreatedAt       string                  `json:"createdAt,omitempty"`
+	SecretNames     []string                `json:"secretNames,omitempty"`
+	CredentialRefs  []credentialRefResponse `json:"credentialRefs,omitempty"`
+	Integrations    []integrationResponse   `json:"integrations,omitempty"`
+	ModelProviders  []modelProviderResponse `json:"modelProviders,omitempty"`
 }
 
 type credentialRefResponse struct {

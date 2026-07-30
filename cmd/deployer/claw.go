@@ -154,26 +154,34 @@ func stateFromClaw(claw map[string]any) stateResponse {
 	if management == "" {
 		management = crdDefaultManagement
 	}
+	doctorFix, _, _ := nestedBool(claw, "spec", "migration", "doctorFix")
+	dreamingEnabled, _, _ := nestedBool(claw, "spec", "memory", "dreaming", "enabled")
+	wikiEnabled, _, _ := nestedBool(claw, "spec", "memory", "wiki", "enabled")
+	idle, _, _ := nestedBool(claw, "spec", "idle")
 
 	return stateResponse{
-		Namespace:      namespace,
-		Name:           name,
-		Exists:         true,
-		Ready:          ready,
-		Reason:         reason,
-		Message:        message,
-		GatewayURL:     gatewayURL,
-		Provider:       provider,
-		Providers:      providers,
-		Model:          model,
-		Image:          image,
-		AgentName:      agentName,
-		Management:     management,
-		CreatedAt:      createdAt,
-		SecretNames:    credentialSecretNames(claw),
-		CredentialRefs: credentialRefs(claw),
-		Integrations:   integrationsFromClaw(claw),
-		ModelProviders: modelProvidersFromClaw(claw),
+		Namespace:       namespace,
+		Name:            name,
+		Exists:          true,
+		Ready:           ready,
+		Reason:          reason,
+		Message:         message,
+		GatewayURL:      gatewayURL,
+		Provider:        provider,
+		Providers:       providers,
+		Model:           model,
+		Image:           image,
+		AgentName:       agentName,
+		Management:      management,
+		DoctorFix:       doctorFix,
+		DreamingEnabled: dreamingEnabled,
+		WikiEnabled:     wikiEnabled,
+		Idle:            idle,
+		CreatedAt:       createdAt,
+		SecretNames:     credentialSecretNames(claw),
+		CredentialRefs:  credentialRefs(claw),
+		Integrations:    integrationsFromClaw(claw),
+		ModelProviders:  modelProvidersFromClaw(claw),
 	}
 }
 
@@ -268,11 +276,11 @@ func (s *server) applyClaw(ctx context.Context, identity userIdentity, req provi
 	if req.Management == "" {
 		req.Management = s.defaultConfigManagement()
 	}
-	credentials, rawConfig, agentFiles, err := s.currentClawSpec(ctx, identity, req.Namespace, req.Name)
+	credentials, rawConfig, agentFiles, migration, err := s.currentClawSpec(ctx, identity, req.Namespace, req.Name)
 	if err != nil {
 		return err
 	}
-	existingAuth, existingWebSearch, existingRepoAccess, err := s.currentClawTopLevelMaps(ctx, identity, req.Namespace, req.Name)
+	existingAuth, existingWebSearch, existingRepoAccess, memory, existingIdle, err := s.currentClawTopLevelMaps(ctx, identity, req.Namespace, req.Name)
 	if err != nil {
 		return err
 	}
@@ -313,6 +321,12 @@ func (s *server) applyClaw(ctx context.Context, identity userIdentity, req provi
 	if len(agentFiles) > 0 {
 		spec["agentFiles"] = agentFiles
 	}
+	if req.DoctorFix {
+		migration["doctorFix"] = true
+	}
+	if len(migration) > 0 {
+		spec["migration"] = migration
+	}
 	if len(auth) > 0 {
 		spec["auth"] = auth
 	} else if len(existingAuth) > 0 && shouldPreserveAuth(req.Name, existingAuth, req.RemovedIntegrations) {
@@ -327,6 +341,13 @@ func (s *server) applyClaw(ctx context.Context, identity userIdentity, req provi
 		spec["repoAccess"] = repoAccess
 	} else if len(existingRepoAccess) > 0 && shouldPreserveRepoAccess(req.Name, existingRepoAccess, req.RemovedIntegrations) {
 		spec["repoAccess"] = existingRepoAccess
+	}
+	memory = applyMemoryToggles(memory, req.DreamingEnabled, req.WikiEnabled)
+	if len(memory) > 0 {
+		spec["memory"] = memory
+	}
+	if existingIdle {
+		spec["idle"] = true
 	}
 
 	body := map[string]any{
@@ -457,36 +478,56 @@ func (s *server) defaultConfigManagement() string {
 	return s.defaultManagement
 }
 
-func (s *server) currentClawSpec(ctx context.Context, identity userIdentity, namespace, name string) ([]any, map[string]any, map[string]any, error) {
+func (s *server) currentClawSpec(ctx context.Context, identity userIdentity, namespace, name string) ([]any, map[string]any, map[string]any, map[string]any, error) {
 	var claw map[string]any
 	err := s.kubeJSON(ctx, identity, http.MethodGet, apiPath("apis/claw.sandbox.redhat.com/v1alpha1/namespaces", namespace, "claws", name), nil, &claw)
 	if err != nil {
 		var apiErr apiError
 		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
-			return nil, map[string]any{}, nil, nil
+			return nil, map[string]any{}, nil, map[string]any{}, nil
 		}
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	credentials, _, _ := nestedSlice(claw, "spec", "credentials")
 	raw, _, _ := nestedMap(claw, "spec", "config", "raw")
 	agentFiles, _, _ := nestedMap(claw, "spec", "agentFiles")
-	return credentials, cloneMap(raw), cloneMap(agentFiles), nil
+	migration, _, _ := nestedMap(claw, "spec", "migration")
+	return credentials, cloneMap(raw), cloneMap(agentFiles), cloneMap(migration), nil
 }
 
-func (s *server) currentClawTopLevelMaps(ctx context.Context, identity userIdentity, namespace, name string) (map[string]any, map[string]any, map[string]any, error) {
+func (s *server) currentClawTopLevelMaps(ctx context.Context, identity userIdentity, namespace, name string) (map[string]any, map[string]any, map[string]any, map[string]any, bool, error) {
 	var claw map[string]any
 	err := s.kubeJSON(ctx, identity, http.MethodGet, apiPath("apis/claw.sandbox.redhat.com/v1alpha1/namespaces", namespace, "claws", name), nil, &claw)
 	if err != nil {
 		var apiErr apiError
 		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
-			return nil, nil, nil, nil
+			return nil, nil, nil, nil, false, nil
 		}
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, false, err
 	}
 	auth, _, _ := nestedMap(claw, "spec", "auth")
 	webSearch, _, _ := nestedMap(claw, "spec", "webSearch")
 	repoAccess, _, _ := nestedMap(claw, "spec", "repoAccess")
-	return cloneMap(auth), cloneMap(webSearch), cloneMap(repoAccess), nil
+	memory, _, _ := nestedMap(claw, "spec", "memory")
+	idle, _, _ := nestedBool(claw, "spec", "idle")
+	return cloneMap(auth), cloneMap(webSearch), cloneMap(repoAccess), cloneMap(memory), idle, nil
+}
+
+func applyMemoryToggles(memory map[string]any, dreamingEnabled, wikiEnabled *bool) map[string]any {
+	memory = cloneMap(memory)
+	for name, enabled := range map[string]*bool{
+		"dreaming": dreamingEnabled,
+		"wiki":     wikiEnabled,
+	} {
+		if enabled == nil {
+			continue
+		}
+		layer, _, _ := nestedMap(memory, name)
+		layer = cloneMap(layer)
+		layer["enabled"] = *enabled
+		memory[name] = layer
+	}
+	return memory
 }
 
 func upsertCredential(credentials []any, instanceName, provider string) []any {

@@ -118,6 +118,14 @@ user-managed config disabled. The deployer hides user-managed-only controls,
 including the custom `spec.image` OpenClaw image override, and rejects requests
 that try to set them.
 
+## Doctor migrations
+
+The **Run the OpenClaw doctor migration** checkbox is off by default. Selecting
+it writes `spec.migration.doctorFix: true`. The operator pauses the gateway and
+runs `openclaw doctor --fix --non-interactive` once for each target image
+reference. After the migration is requested, the deployer preserves that
+one-way approval on later saves.
+
 ## Automated deploys (merge to main)
 
 Merging a PR that touches deployer source rolls the running deployer out

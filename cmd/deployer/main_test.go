@@ -186,7 +186,7 @@ func TestCurrentClawSpecReturnsNonNotFoundErrors(t *testing.T) {
 				bearerToken: "service-account-token",
 				client:      client,
 			}
-			credentials, raw, _, err := s.currentClawSpec(context.Background(), userIdentity{}, "sallyom-claw", "instance")
+			credentials, raw, _, _, err := s.currentClawSpec(context.Background(), userIdentity{}, "sallyom-claw", "instance")
 			if tt.wantErr {
 				assert.Error(t, err)
 				return
@@ -196,6 +196,64 @@ func TestCurrentClawSpecReturnsNonNotFoundErrors(t *testing.T) {
 			assert.Empty(t, raw)
 		})
 	}
+}
+
+func TestHandleIdlePatchesOnlySpecIdle(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		idle  bool
+	}{
+		{name: "idle", value: "true", idle: true},
+		{name: "unidle", value: "false", idle: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			patches := 0
+			client := &http.Client{
+				Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+					body := `{"metadata":{"name":"instance","namespace":"sallyom-claw"},"spec":{"idle":` + tt.value + `}}`
+					if r.Method == http.MethodPatch {
+						patches++
+						assert.Equal(t, "/apis/claw.sandbox.redhat.com/v1alpha1/namespaces/sallyom-claw/claws/instance", r.URL.Path)
+						assert.Equal(t, "application/merge-patch+json", r.Header.Get("Content-Type"))
+						var patch map[string]any
+						require.NoError(t, json.NewDecoder(r.Body).Decode(&patch))
+						assert.Equal(t, map[string]any{"spec": map[string]any{"idle": tt.idle}}, patch)
+					}
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     make(http.Header),
+						Body:       io.NopCloser(strings.NewReader(body)),
+					}, nil
+				}),
+			}
+			s := &server{apiServer: "https://kubernetes.example.test", bearerToken: "service-account-token", client: client}
+			req := httptest.NewRequest(http.MethodPost, "/api/idle?namespace=sallyom-claw&name=instance&idle="+tt.value, nil)
+			req.Header.Set("X-Forwarded-User", "sallyom")
+			rec := httptest.NewRecorder()
+
+			s.handleIdle(rec, req)
+
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			assert.Equal(t, 1, patches)
+			var state stateResponse
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &state))
+			assert.Equal(t, tt.idle, state.Idle)
+		})
+	}
+}
+
+func TestHandleIdleRejectsInvalidValue(t *testing.T) {
+	s := &server{}
+	req := httptest.NewRequest(http.MethodPost, "/api/idle?namespace=sallyom-claw&name=instance&idle=maybe", nil)
+	req.Header.Set("X-Forwarded-User", "sallyom")
+	rec := httptest.NewRecorder()
+
+	s.handleIdle(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "idle must be true or false")
 }
 
 func TestHandleDeleteRemovesAllManagedProviderSecrets(t *testing.T) {
@@ -977,6 +1035,94 @@ func TestApplyClawSetsOpenClawImage(t *testing.T) {
 	assert.Equal(t, "quay.io/example/openclaw:custom", image)
 }
 
+func TestApplyClawRequestsAndPreservesDoctorFix(t *testing.T) {
+	tests := map[string]struct {
+		existing string
+		request  bool
+	}{
+		"requests migration": {request: true},
+		"preserves requested migration": {
+			existing: `{"spec":{"migration":{"doctorFix":true}}}`,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			var applied map[string]any
+			client := &http.Client{
+				Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+					if r.Method == http.MethodGet {
+						if tt.existing == "" {
+							return &http.Response{
+								StatusCode: http.StatusNotFound,
+								Header:     make(http.Header),
+								Body:       io.NopCloser(strings.NewReader(`{"message":"not found"}`)),
+							}, nil
+						}
+						return &http.Response{
+							StatusCode: http.StatusOK,
+							Header:     make(http.Header),
+							Body:       io.NopCloser(strings.NewReader(tt.existing)),
+						}, nil
+					}
+					require.Equal(t, http.MethodPatch, r.Method)
+					require.NoError(t, json.NewDecoder(r.Body).Decode(&applied))
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     make(http.Header),
+						Body:       io.NopCloser(strings.NewReader(`{}`)),
+					}, nil
+				}),
+			}
+			s := &server{
+				apiServer:   "https://kubernetes.example.test",
+				bearerToken: "service-account-token",
+				client:      client,
+			}
+
+			require.NoError(t, s.applyClaw(context.Background(), userIdentity{}, provisionRequest{
+				Namespace: "sallyom-claw",
+				Name:      "instance",
+				Provider:  "openrouter",
+				DoctorFix: tt.request,
+			}))
+			doctorFix, found, err := nestedBool(applied, "spec", "migration", "doctorFix")
+			require.NoError(t, err)
+			assert.True(t, found)
+			assert.True(t, doctorFix)
+		})
+	}
+}
+
+func TestApplyClawPreservesIdleState(t *testing.T) {
+	var applied map[string]any
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			body := `{"spec":{"idle":true}}`
+			if r.Method == http.MethodPatch {
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&applied))
+				body = `{}`
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		}),
+	}
+	s := &server{apiServer: "https://kubernetes.example.test", bearerToken: "service-account-token", client: client}
+
+	require.NoError(t, s.applyClaw(context.Background(), userIdentity{}, provisionRequest{
+		Namespace: "sallyom-claw",
+		Name:      "instance",
+		Provider:  "openrouter",
+	}))
+
+	idle, found, err := nestedBool(applied, "spec", "idle")
+	require.NoError(t, err)
+	assert.True(t, found)
+	assert.True(t, idle)
+}
+
 func TestHandleProvisionRejectsOpenClawImageWhenUserManagedDisabled(t *testing.T) {
 	s := &server{userManagedDisabled: true}
 	body := strings.NewReader(`{
@@ -1033,6 +1179,67 @@ func TestStateFromClawIncludesOpenClawImage(t *testing.T) {
 	})
 
 	assert.Equal(t, "quay.io/example/openclaw:custom", state.Image)
+}
+
+func TestStateFromClawIncludesDoctorFix(t *testing.T) {
+	state := stateFromClaw(map[string]any{
+		"metadata": map[string]any{"name": "instance"},
+		"spec": map[string]any{
+			"config":    map[string]any{},
+			"migration": map[string]any{"doctorFix": true},
+		},
+	})
+
+	assert.True(t, state.DoctorFix)
+}
+
+func TestStateFromClawIncludesMemoryToggles(t *testing.T) {
+	state := stateFromClaw(map[string]any{
+		"metadata": map[string]any{"name": "instance"},
+		"spec": map[string]any{
+			"memory": map[string]any{
+				"dreaming": map[string]any{"enabled": true},
+				"wiki":     map[string]any{"enabled": true},
+			},
+		},
+	})
+
+	assert.True(t, state.DreamingEnabled)
+	assert.True(t, state.WikiEnabled)
+}
+
+func TestStateFromClawIncludesIdleSpec(t *testing.T) {
+	state := stateFromClaw(map[string]any{
+		"metadata": map[string]any{"name": "instance"},
+		"spec":     map[string]any{"idle": true},
+	})
+
+	assert.True(t, state.Idle)
+}
+
+func TestApplyMemoryTogglesPreservesAdvancedConfig(t *testing.T) {
+	enabled := true
+	disabled := false
+	memory := map[string]any{
+		"dreaming": map[string]any{
+			"enabled":   false,
+			"frequency": "0 5 * * *",
+			"model":     "openai/gpt-5.6-mini",
+		},
+		"wiki": map[string]any{
+			"enabled": true,
+			"mode":    "isolated",
+		},
+	}
+
+	got := applyMemoryToggles(memory, &enabled, &disabled)
+
+	assert.Equal(t, true, got["dreaming"].(map[string]any)["enabled"])
+	assert.Equal(t, "0 5 * * *", got["dreaming"].(map[string]any)["frequency"])
+	assert.Equal(t, "openai/gpt-5.6-mini", got["dreaming"].(map[string]any)["model"])
+	assert.Equal(t, false, got["wiki"].(map[string]any)["enabled"])
+	assert.Equal(t, "isolated", got["wiki"].(map[string]any)["mode"])
+	assert.Equal(t, false, memory["dreaming"].(map[string]any)["enabled"], "input should not be mutated")
 }
 
 func TestStateFromClawIncludesProviderCredentialRefs(t *testing.T) {
