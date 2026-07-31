@@ -667,6 +667,69 @@ func credentialNamed(t *testing.T, claw map[string]any, name string) map[string]
 	return nil
 }
 
+func TestHandleProvisionRejectsCredentialLessModelProvider(t *testing.T) {
+	clawApplied := false
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			body := `{}`
+			if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/claws/instance") {
+				body = `{"metadata":{"namespace":"sallyom-claw","name":"instance"},"spec":{}}`
+			}
+			if r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/claws/instance") {
+				clawApplied = true
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		}),
+	}
+	s := &server{apiServer: "https://kubernetes.example.test", bearerToken: "service-account-token", client: client}
+	body := `{"namespace":"sallyom-claw","name":"instance","provider":"openai","secretName":"existing-openai-key","modelProviders":[{"provider":"anthropic-vertex","model":"anthropic-vertex/claude-sonnet-4-6","gcpProject":"example-project","gcpLocation":"us-east5"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/provision", strings.NewReader(body))
+	req.Header.Set("X-Forwarded-User", "sallyom")
+	rec := httptest.NewRecorder()
+
+	s.handleProvision(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "requires an API key or an existing secret name")
+	assert.False(t, clawApplied)
+}
+
+func TestValidateModelProvidersAcceptsStateDerivedEntries(t *testing.T) {
+	state := stateFromClaw(map[string]any{
+		"metadata": map[string]any{"name": "instance"},
+		"spec": map[string]any{
+			"credentials": []any{
+				map[string]any{
+					"name":      "anthropic-vertex",
+					"provider":  "anthropic",
+					"type":      "gcp",
+					"gcp":       map[string]any{"project": "example-project", "location": "us-east5"},
+					"secretRef": []any{map[string]any{"name": "openclaw-instance-anthropic-vertex-gcp", "key": gcpSecretKey}},
+				},
+			},
+		},
+	})
+	require.Len(t, state.ModelProviders, 1)
+
+	modelProviders := make([]modelProviderRequest, 0, len(state.ModelProviders))
+	for _, modelProvider := range state.ModelProviders {
+		modelProviders = append(modelProviders, modelProviderRequest{
+			Provider:    modelProvider.Provider,
+			Model:       modelProvider.Model,
+			SecretName:  modelProvider.SecretName,
+			SecretKey:   modelProvider.SecretKey,
+			GCPProject:  modelProvider.GCPProject,
+			GCPLocation: modelProvider.GCPLocation,
+		})
+	}
+
+	assert.NoError(t, validateModelProviders(modelProviders))
+}
+
 func TestHandleProvisionSetsSpecVersion(t *testing.T) {
 	var applied map[string]any
 	client := &http.Client{
