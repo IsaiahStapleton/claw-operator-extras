@@ -196,10 +196,12 @@ type integrationResponse struct {
 }
 
 type modelProviderResponse struct {
-	Provider   string `json:"provider"`
-	Model      string `json:"model,omitempty"`
-	SecretName string `json:"secretName,omitempty"`
-	SecretKey  string `json:"secretKey,omitempty"`
+	Provider    string `json:"provider"`
+	Model       string `json:"model,omitempty"`
+	SecretName  string `json:"secretName,omitempty"`
+	SecretKey   string `json:"secretKey,omitempty"`
+	GCPProject  string `json:"gcpProject,omitempty"`
+	GCPLocation string `json:"gcpLocation,omitempty"`
 }
 
 type listResponse struct {
