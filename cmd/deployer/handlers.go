@@ -321,6 +321,46 @@ func (s *server) handleRestart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, state)
 }
 
+func (s *server) handleIdle(w http.ResponseWriter, r *http.Request) {
+	identity, err := currentIdentity(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	namespace := r.URL.Query().Get("namespace")
+	if err := validateNamespace(namespace); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	name := r.URL.Query().Get("name")
+	if err := validateResourceName(name, "Claw name"); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	idleParam := r.URL.Query().Get("idle")
+	if idleParam != "true" && idleParam != "false" {
+		writeError(w, http.StatusBadRequest, "idle must be true or false")
+		return
+	}
+	idle := idleParam == "true"
+
+	if err := s.mergePatch(
+		r.Context(),
+		identity,
+		apiPath("apis/claw.sandbox.redhat.com/v1alpha1/namespaces", namespace, "claws", name),
+		map[string]any{"spec": map[string]any{"idle": idle}},
+	); err != nil {
+		writeError(w, statusCodeFor(err), "failed to update OpenClaw idle state: "+err.Error())
+		return
+	}
+	state, err := s.getState(r.Context(), identity, namespace, name)
+	if err != nil {
+		writeError(w, statusCodeFor(err), err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, state)
+}
+
 func (s *server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	identity, err := currentIdentity(r)
 	if err != nil {

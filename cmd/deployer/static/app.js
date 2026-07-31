@@ -127,7 +127,12 @@ const els = {
   defaultModel: document.getElementById("default-model"),
   openClawImage: document.getElementById("openClawImage"),
   openClawImageField: document.getElementById("openclaw-image-field"),
+  doctorFix: document.getElementById("doctorFix"),
+  doctorFixHint: document.getElementById("doctor-fix-hint"),
+  dreamingEnabled: document.getElementById("dreamingEnabled"),
+  wikiEnabled: document.getElementById("wikiEnabled"),
   managementHint: document.getElementById("management-hint"),
+  managementHelp: document.getElementById("management-help"),
   vertexBox: document.getElementById("vertex-box"),
   gcpProject: document.getElementById("gcpProject"),
   gcpLocation: document.getElementById("gcpLocation"),
@@ -159,9 +164,6 @@ const els = {
   providerToggle: document.getElementById("provider-toggle"),
   providerCaret: document.getElementById("provider-caret"),
   providerBody: document.getElementById("provider-body"),
-  credentialToggle: document.getElementById("credential-toggle"),
-  credentialCaret: document.getElementById("credential-caret"),
-  credentialBody: document.getElementById("credential-body"),
   integrationType: document.getElementById("integrationType"),
   integrationToggle: document.getElementById("integration-toggle"),
   integrationCaret: document.getElementById("integration-caret"),
@@ -380,9 +382,10 @@ async function init() {
     state.userManagedEnabled = Boolean(me.userManagedEnabled);
     els.openClawImageField.hidden = !state.userManagedEnabled;
     els.management.disabled = !state.userManagedEnabled;
+    els.managementHelp.hidden = !state.userManagedEnabled;
     els.managementHint.textContent = state.userManagedEnabled
-      ? "User-managed is the default. Proxy-backed providers and add-ons stay managed through this form and the Claw CR; ordinary OpenClaw runtime config edits from the UI, CLI, plugins, skills, MCPs, and agents persist on the PVC. Operator-managed keeps reconciling runtime config from this form and the Claw CR."
-      : "User-managed config is disabled by this deployer. New and updated Claws use operator-managed runtime config, so CR fields from this form keep applying.";
+      ? "User-managed is the usual choice; operator-managed keeps runtime config in the Claw CR."
+      : "User-managed config is disabled by this deployer; new and updated Claws use operator-managed runtime config.";
     if (!state.userManagedEnabled) {
       els.openClawImage.value = "";
       state.openClawImage = "";
@@ -500,6 +503,13 @@ function renderList(claws, opts = {}) {
       els.openClawImage.value = "";
       state.openClawImage = "";
     }
+    els.doctorFix.checked = Boolean(selected.doctorFix);
+    els.doctorFix.disabled = Boolean(selected.doctorFix);
+    els.doctorFixHint.textContent = selected.doctorFix
+      ? "Doctor migration requested. The operator runs it once for each image reference."
+      : "Use this when updating to a new OpenClaw version, or when the logs say a doctor migration is required.";
+    els.dreamingEnabled.checked = Boolean(selected.dreamingEnabled);
+    els.wikiEnabled.checked = Boolean(selected.wikiEnabled);
   } else {
     state.currentSecretNames = [];
     state.currentCredentialRefs = [];
@@ -510,6 +520,11 @@ function renderList(claws, opts = {}) {
       els.openClawImage.value = "";
       state.openClawImage = "";
     }
+    els.doctorFix.checked = false;
+    els.doctorFix.disabled = false;
+    els.doctorFixHint.textContent = "Use this when updating to a new OpenClaw version, or when the logs say a doctor migration is required.";
+    els.dreamingEnabled.checked = false;
+    els.wikiEnabled.checked = false;
   }
 
   els.provision.textContent = state.exists ? "Save changes" : "Create OpenClaw";
@@ -568,6 +583,9 @@ function renderClawNameOptions(claws) {
 const failurePattern = /fail|error|backoff|crash|invalid|denied|forbidden|unauthor|not ?found|missing|quota|exceeded|insufficient|timeout/i;
 
 function statusKind(claw) {
+  if (claw.idle) {
+    return "idle";
+  }
   if (claw.ready) {
     return "ready";
   }
@@ -579,11 +597,15 @@ function statusKind(claw) {
 
 const statusMeta = {
   ready: { label: "Ready", cls: "status-label--ready" },
+  idle: { label: "Idle", cls: "status-label--idle" },
   deploying: { label: "Deploying", cls: "status-label--deploying" },
   failed: { label: "Failed", cls: "status-label--failed" },
 };
 
 function statusIcon(kind) {
+  if (kind === "idle") {
+    return '<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" fill="currentColor" opacity=".16"/><path d="M6 5v6M10 5v6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+  }
   if (kind === "ready") {
     return '<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" fill="var(--success-border)"/><path d="M5 8.2l2 2 4-4.4" stroke="var(--surface)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   }
@@ -654,7 +676,9 @@ function renderClaws(claws) {
     label.className = `status-label ${meta.cls}`;
     label.innerHTML = `${statusIcon(kind)}<span>${meta.label}</span>`;
     statusCell.appendChild(label);
-    const reasonText = claw.message || claw.reason || "";
+    const reasonText = kind === "idle"
+      ? "Scaled to zero; data and configuration are preserved."
+      : claw.message || claw.reason || "";
     if (reasonText && kind !== "ready") {
       const reason = document.createElement("div");
       reason.className = "status-reason";
@@ -666,7 +690,7 @@ function renderClaws(claws) {
     actionsCell.className = "table__cell actions-cell";
     const actions = document.createElement("div");
     actions.className = "row-actions";
-    if (isSafeHref(claw.gatewayURL)) {
+    if (!claw.idle && isSafeHref(claw.gatewayURL)) {
       const link = document.createElement("a");
       link.className = "btn btn--sm";
       link.href = claw.gatewayURL;
@@ -675,6 +699,14 @@ function renderClaws(claws) {
       link.textContent = "Control UI";
       actions.appendChild(link);
     }
+    const idle = document.createElement("button");
+    idle.type = "button";
+    idle.className = "btn btn--sm claw-action";
+    idle.textContent = claw.idle ? "Unidle" : "Idle";
+    idle.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setClawIdle(namespace, claw.name, !claw.idle);
+    });
     const restart = document.createElement("button");
     restart.type = "button";
     restart.className = "btn btn--sm claw-action";
@@ -691,7 +723,7 @@ function renderClaws(claws) {
       event.stopPropagation();
       deleteClaw(namespace, claw.name);
     });
-    actions.append(restart, remove);
+    actions.append(idle, restart, remove);
     actionsCell.appendChild(actions);
 
     table.append(nameCell, providerCell, statusCell, actionsCell);
@@ -1222,6 +1254,8 @@ function renderReview() {
     ["API key", credential],
     ["Model providers", modelProviderLabels.length ? modelProviderLabels.join(", ") : "None"],
     ["Config ownership", selectedManagement() === "user" ? "User-managed" : "Operator-managed"],
+    ["Doctor migration", els.doctorFix.checked ? "Run once per image" : "Not requested"],
+    ["Memory", `Dreaming ${els.dreamingEnabled.checked ? "enabled" : "disabled"}; Wiki ${els.wikiEnabled.checked ? "enabled" : "disabled"}`],
     ["Add-ons", state.integrations.length ? state.integrations.map((i) => integrationLabels[i.kind] || i.kind).join(", ") : "None"],
     ["Starting files", source === "git" ? "From Git" : source === "upload" ? "Uploaded folder" : "None"],
   ];
@@ -1329,6 +1363,15 @@ function generateYaml() {
   }
   y += "  config:\n";
   y += "    management: " + selectedManagement() + "\n";
+  if (els.doctorFix.checked) {
+    y += "  migration:\n";
+    y += "    doctorFix: true\n";
+  }
+  y += "  memory:\n";
+  y += "    dreaming:\n";
+  y += "      enabled: " + els.dreamingEnabled.checked + "\n";
+  y += "    wiki:\n";
+  y += "      enabled: " + els.wikiEnabled.checked + "\n";
   if (vertex && (shouldConfigureAgent() || selectedProviderCredentialSupplied())) {
     y += "  vertex:\n";
     y += "    projectID: " + (els.gcpProject.value.trim() || "<gcp-project>") + "\n";
@@ -1554,6 +1597,9 @@ els.provision.addEventListener("click", async () => {
   const gcpProject = els.gcpProject.value.trim();
   const gcpLocation = els.gcpLocation.value.trim();
   const management = selectedManagement();
+  const doctorFix = els.doctorFix.checked;
+  const dreamingEnabled = els.dreamingEnabled.checked;
+  const wikiEnabled = els.wikiEnabled.checked;
   const source = els.filesystemSource.value;
   const gitURL = els.gitURL.value.trim();
   const gitRef = els.gitRef.value.trim();
@@ -1587,7 +1633,8 @@ els.provision.addEventListener("click", async () => {
     const current = await api("/api/provision", {
       method: "POST",
       body: JSON.stringify({
-        namespace, name, provider, configureAgent, model, openClawImage, apiKey, secretName, secretKey, gcpProject, gcpLocation, management,
+        namespace, name, provider, configureAgent, model, openClawImage, apiKey, secretName, secretKey, gcpProject, gcpLocation, management, doctorFix,
+        dreamingEnabled, wikiEnabled,
         filesystemSource, gitURL, gitRef, gitPath, gitSecretName, gitUsername, gitPassword, configMapName,
         integrations, removedIntegrations, modelProviders, removedModelProviders,
       }),
@@ -1631,6 +1678,11 @@ els.reset.addEventListener("click", () => {
   els.gcpProject.value = "";
   els.gcpLocation.value = defaultGCPLocations.openrouter || "";
   els.management.value = "user";
+  els.doctorFix.checked = false;
+  els.doctorFix.disabled = false;
+  els.doctorFixHint.textContent = "Use this when updating to a new OpenClaw version, or when the logs say a doctor migration is required.";
+  els.dreamingEnabled.checked = false;
+  els.wikiEnabled.checked = false;
   els.apiKey.value = "";
   els.gcpCredentials.value = "";
   els.filesystemSource.value = "";
@@ -1672,6 +1724,26 @@ async function restartClaw(namespace, name) {
   setStatus(`Restarting ${namespace}/${name}…`);
   try {
     await api(`/api/restart?namespace=${encodeURIComponent(namespace)}&name=${encodeURIComponent(name)}`, { method: "POST" });
+    await refresh();
+  } catch (error) {
+    setStatus(error.message, true);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function setClawIdle(namespace, name, idle) {
+  const action = idle ? "Idle" : "Unidle";
+  const detail = idle
+    ? " This stops its workloads but preserves data and configuration."
+    : " This starts its workloads again.";
+  if (!namespace || !name || !confirm(`${action} ${namespace}/${name}?${detail}`)) {
+    return;
+  }
+  setBusy(true);
+  setStatus(`${action === "Idle" ? "Idling" : "Unidling"} ${namespace}/${name}…`);
+  try {
+    await api(`/api/idle?namespace=${encodeURIComponent(namespace)}&name=${encodeURIComponent(name)}&idle=${idle}`, { method: "POST" });
     await refresh();
   } catch (error) {
     setStatus(error.message, true);
@@ -1736,7 +1808,6 @@ for (const button of document.querySelectorAll("[data-open-details]")) {
 
 els.detailsToggle.addEventListener("click", () => setSectionOpen(els.detailsToggle, els.detailsBody, els.detailsCaret, els.detailsBody.hidden));
 els.providerToggle.addEventListener("click", () => setSectionOpen(els.providerToggle, els.providerBody, els.providerCaret, els.providerBody.hidden));
-els.credentialToggle.addEventListener("click", () => setSectionOpen(els.credentialToggle, els.credentialBody, els.credentialCaret, els.credentialBody.hidden));
 els.integrationToggle.addEventListener("click", () => setIntegrationOpen(els.integrationBody.hidden));
 els.advancedToggle.addEventListener("click", () => setAdvancedOpen(els.advancedBody.hidden));
 

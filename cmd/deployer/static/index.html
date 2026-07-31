@@ -73,13 +73,14 @@
 
             <div class="divider"></div>
 
-            <!-- Step 2 · AI provider -->
+            <!-- Step 2 · Model & credentials -->
             <button type="button" class="advanced-toggle section-toggle" id="provider-toggle" aria-expanded="true" aria-controls="provider-body">
               <span class="section__num">2</span>
-              <h3 class="section__title">Choose an AI provider</h3>
+              <h3 class="section__title">Choose model &amp; credentials</h3>
               <svg class="caret open" id="provider-caret" width="14" height="14" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="var(--text-muted)" stroke-width="1.6" stroke-linecap="round"/></svg>
             </button>
-            <div class="section__body cols" id="provider-body">
+            <div class="section__body" id="provider-body">
+              <div class="cols-2">
               <div class="field">
                 <label for="provider">Provider</label>
                 <select id="provider" name="provider">
@@ -91,7 +92,7 @@
                   <option value="anthropic-vertex">Google Vertex AI (Claude)</option>
                   <option value="xai">xAI</option>
                 </select>
-                <p class="field__hint">The AI service that powers your OpenClaw. You'll paste a key for it in step 3.</p>
+                <p class="field__hint">The AI service that powers your OpenClaw.</p>
               </div>
               <div class="field">
                 <label for="model">Model <span class="muted">(optional)</span></label>
@@ -99,23 +100,9 @@
                 <datalist id="model-options"></datalist>
                 <p class="field__hint" id="hint-model">Default: <code id="default-model">—</code></p>
               </div>
-              <div class="field">
-                <label>Configured model providers</label>
-                <button type="button" id="model-provider-add" class="btn btn--sm">Add provider</button>
-                <div class="integration-list" id="model-provider-list"></div>
-                <p class="field__hint">Add more than one provider/model. Each entry uses the provider, model, and Secret/API key fields currently shown in this form.</p>
               </div>
-            </div>
-
-            <div class="divider"></div>
-
-            <!-- Step 3 · API key -->
-            <button type="button" class="advanced-toggle section-toggle" id="credential-toggle" aria-expanded="true" aria-controls="credential-body">
-              <span class="section__num">3</span>
-              <h3 class="section__title">Add your API key</h3>
-              <svg class="caret open" id="credential-caret" width="14" height="14" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="var(--text-muted)" stroke-width="1.6" stroke-linecap="round"/></svg>
-            </button>
-            <div class="section__body" id="credential-body">
+              <div id="credential-body">
+                <p class="field__hint">Add the credential for this provider.</p>
               <div class="vertex-box" id="vertex-box" hidden>
                 <div class="field">
                   <label for="gcpProject">GCP Project ID <span class="req">*</span></label>
@@ -167,13 +154,21 @@
                   </div>
                 </div>
               </details>
+              <div class="field">
+                <label>More providers <span class="muted">(optional)</span></label>
+                <button type="button" id="model-provider-add" class="btn btn--sm">Add another provider</button>
+                <div class="integration-list" id="model-provider-list"></div>
+                <p class="field__hint">Adds the provider, model, and credential shown above. You can add more than one.</p>
+              </div>
+            </div>
+
             </div>
 
             <div class="divider"></div>
 
-            <!-- Step 4 · Apps & tools -->
+            <!-- Step 3 · Apps & tools -->
             <button type="button" class="advanced-toggle" id="integration-toggle" aria-expanded="false" aria-controls="integration-body">
-              <span class="section__num">4</span>
+              <span class="section__num">3</span>
               <h3 class="section__title">Connect apps &amp; tools <span class="optional">· optional</span></h3>
               <svg class="caret" id="integration-caret" width="14" height="14" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="var(--text-muted)" stroke-width="1.6" stroke-linecap="round"/></svg>
             </button>
@@ -342,9 +337,9 @@
 
             <div class="divider"></div>
 
-            <!-- Step 5 · Runtime config -->
+            <!-- Step 4 · Runtime config -->
             <div class="section__head">
-              <span class="section__num">5</span>
+              <span class="section__num">4</span>
               <h3 class="section__title">Config ownership &amp; image</h3>
             </div>
             <div class="section__body cols">
@@ -354,20 +349,49 @@
                   <option value="user">User-managed — OpenClaw owns runtime config</option>
                   <option value="operator">Operator-managed — CR fields keep applying</option>
                 </select>
-                <p class="field__hint" id="management-hint">User-managed is the default. Proxy-backed providers and add-ons stay managed through this form and the Claw CR; ordinary OpenClaw runtime config edits from the UI, CLI, plugins, skills, MCPs, and agents persist on the PVC. Operator-managed keeps reconciling runtime config from this form and the Claw CR.</p>
+                <p class="field__hint" id="management-hint">User-managed is the usual choice; operator-managed keeps runtime config in the Claw CR.</p>
+                <details class="help-box" id="management-help">
+                  <summary aria-label="About config ownership">?</summary>
+                  <p class="field__hint"><strong>User-managed</strong> lets OpenClaw retain runtime changes made through its UI, CLI, plugins, skills, MCPs, and agents. The deployer still manages provider credentials and add-ons. Choose <strong>operator-managed</strong> only when the Claw CR should remain the source of truth for runtime config; later runtime edits can be overwritten when the operator reconciles.</p>
+                </details>
               </div>
               <div class="field" id="openclaw-image-field" hidden>
                 <label for="openClawImage">OpenClaw image override <span class="muted">(optional)</span></label>
                 <input id="openClawImage" name="openClawImage" placeholder="ghcr.io/openclaw/openclaw:2026.6.10">
                 <p class="field__hint">Leave blank for the operator default. A value here sets <code>spec.image</code>.</p>
               </div>
+              <div class="field">
+                <label class="checkbox-field">
+                  <input id="doctorFix" name="doctorFix" type="checkbox">
+                  <span>Run OpenClaw doctor during init</span>
+                </label>
+                <p class="field__hint" id="doctor-fix-hint">Use this when updating to a new OpenClaw version, or when the logs say a doctor migration is required.</p>
+                <details class="help-box">
+                  <summary aria-label="About the OpenClaw doctor migration">?</summary>
+                  <p class="field__hint">The operator pauses the gateway and runs <code>openclaw doctor --fix --non-interactive</code> once per image reference. It works for both operator-managed and user-managed Claws.</p>
+                </details>
+              </div>
+              <div class="field">
+                <label class="checkbox-field">
+                  <input id="dreamingEnabled" name="dreamingEnabled" type="checkbox">
+                  <span>Enable memory dreaming</span>
+                </label>
+                <p class="field__hint">Consolidates short-term recalls into durable memory on a schedule. Dreaming runs consume model tokens; configure its schedule and model in the Claw CR.</p>
+              </div>
+              <div class="field">
+                <label class="checkbox-field">
+                  <input id="wikiEnabled" name="wikiEnabled" type="checkbox">
+                  <span>Enable memory wiki</span>
+                </label>
+                <p class="field__hint">Builds a durable wiki vault from memory artifacts. Configure bridge or isolated mode in the Claw CR.</p>
+              </div>
             </div>
 
             <div class="divider"></div>
 
-            <!-- Step 6 · Starting files (optional / advanced) -->
+            <!-- Step 5 · Starting files (optional / advanced) -->
             <button type="button" class="advanced-toggle" id="advanced-toggle" aria-expanded="false" aria-controls="advanced-body">
-              <span class="section__num">6</span>
+              <span class="section__num">5</span>
               <h3 class="section__title">Starting files <span class="optional">· optional</span></h3>
               <svg class="caret" id="advanced-caret" width="14" height="14" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="var(--text-muted)" stroke-width="1.6" stroke-linecap="round"/></svg>
             </button>
