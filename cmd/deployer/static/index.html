@@ -355,6 +355,11 @@
                   <p class="field__hint"><strong>User-managed</strong> lets OpenClaw retain runtime changes made through its UI, CLI, plugins, skills, MCPs, and agents. The deployer still manages provider credentials and add-ons. Choose <strong>operator-managed</strong> only when the Claw CR should remain the source of truth for runtime config; later runtime edits can be overwritten when the operator reconciles.</p>
                 </details>
               </div>
+              <div class="field">
+                <label for="version">OpenClaw version <span class="muted">(optional)</span></label>
+                <input id="version" name="version" placeholder="2026.6.10">
+                <p class="field__hint">Leave blank for the operator default. A value here sets <code>spec.version</code>, an image tag only. An image override takes precedence over the version.</p>
+              </div>
               <div class="field" id="openclaw-image-field" hidden>
                 <label for="openClawImage">OpenClaw image override <span class="muted">(optional)</span></label>
                 <input id="openClawImage" name="openClawImage" placeholder="ghcr.io/openclaw/openclaw:2026.6.10">

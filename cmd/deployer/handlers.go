@@ -160,6 +160,11 @@ func (s *server) handleProvision(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "OpenClaw image must not contain whitespace")
 		return
 	}
+	req.Version = strings.TrimSpace(req.Version)
+	if req.Version != "" && !versionRE.MatchString(req.Version) {
+		writeError(w, http.StatusBadRequest, "OpenClaw version must be an image tag matching ^[a-z0-9][a-z0-9._-]*$")
+		return
+	}
 	if strings.TrimSpace(req.Management) == "" {
 		req.Management = s.defaultConfigManagement()
 	} else {

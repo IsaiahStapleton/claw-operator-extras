@@ -31,7 +31,10 @@ import (
 var (
 	namespaceRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 	dnsCharRE   = regexp.MustCompile(`[^a-z0-9-]+`)
-	providers   = map[string]providerOption{
+	// versionRE mirrors the Claw CRD pattern for spec.version, which takes a
+	// tag only and not a full image reference.
+	versionRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
+	providers = map[string]providerOption{
 		"anthropic": {
 			CredentialName:     "anthropic",
 			CredentialProvider: "anthropic",

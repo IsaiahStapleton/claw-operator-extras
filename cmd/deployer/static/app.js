@@ -29,6 +29,7 @@ const state = {
   modelProviders: [],
   removedModelProviders: [],
   openClawImage: "",
+  version: "",
   secretName: "",
   secretKey: "",
   gcpProject: localStorage.getItem("openclaw-deployer.gcpProject") || "",
@@ -127,6 +128,7 @@ const els = {
   defaultModel: document.getElementById("default-model"),
   openClawImage: document.getElementById("openClawImage"),
   openClawImageField: document.getElementById("openclaw-image-field"),
+  version: document.getElementById("version"),
   doctorFix: document.getElementById("doctorFix"),
   doctorFixHint: document.getElementById("doctor-fix-hint"),
   dreamingEnabled: document.getElementById("dreamingEnabled"),
@@ -221,6 +223,7 @@ els.clawName.value = state.selectedName;
 els.provider.value = state.provider;
 els.model.value = state.model;
 els.openClawImage.value = state.openClawImage;
+els.version.value = state.version;
 els.secretName.value = state.secretName;
 els.secretKey.value = state.secretKey;
 els.gcpProject.value = state.gcpProject;
@@ -503,6 +506,13 @@ function renderList(claws, opts = {}) {
       els.openClawImage.value = "";
       state.openClawImage = "";
     }
+    if (selected.version) {
+      els.version.value = selected.version;
+      state.version = selected.version;
+    } else if (!els.version.matches(":focus")) {
+      els.version.value = "";
+      state.version = "";
+    }
     els.doctorFix.checked = Boolean(selected.doctorFix);
     els.doctorFix.disabled = Boolean(selected.doctorFix);
     els.doctorFixHint.textContent = selected.doctorFix
@@ -519,6 +529,10 @@ function renderList(claws, opts = {}) {
     if (!els.openClawImage.matches(":focus")) {
       els.openClawImage.value = "";
       state.openClawImage = "";
+    }
+    if (!els.version.matches(":focus")) {
+      els.version.value = "";
+      state.version = "";
     }
     els.doctorFix.checked = false;
     els.doctorFix.disabled = false;
@@ -1589,6 +1603,7 @@ els.provision.addEventListener("click", async () => {
   const provider = els.provider.value;
   const model = els.model.value.trim();
   const openClawImage = state.userManagedEnabled ? els.openClawImage.value.trim() : "";
+  const version = els.version.value.trim();
   const configureAgent = shouldConfigureAgent();
   const vertex = isGoogleVertex();
   const apiKey = (vertex ? els.gcpCredentials.value : els.apiKey.value).trim();
@@ -1633,7 +1648,7 @@ els.provision.addEventListener("click", async () => {
     const current = await api("/api/provision", {
       method: "POST",
       body: JSON.stringify({
-        namespace, name, provider, configureAgent, model, openClawImage, apiKey, secretName, secretKey, gcpProject, gcpLocation, management, doctorFix,
+        namespace, name, provider, configureAgent, model, openClawImage, version, apiKey, secretName, secretKey, gcpProject, gcpLocation, management, doctorFix,
         dreamingEnabled, wikiEnabled,
         filesystemSource, gitURL, gitRef, gitPath, gitSecretName, gitUsername, gitPassword, configMapName,
         integrations, removedIntegrations, modelProviders, removedModelProviders,
@@ -1673,6 +1688,7 @@ els.reset.addEventListener("click", () => {
   els.provider.value = "openrouter";
   els.model.value = "";
   els.openClawImage.value = "";
+  els.version.value = "";
   els.secretName.value = "";
   els.secretKey.value = "";
   els.gcpProject.value = "";
@@ -1703,6 +1719,7 @@ els.reset.addEventListener("click", () => {
   state.integrationsDirty = false;
   state.management = "user";
   state.openClawImage = "";
+  state.version = "";
   clearStoredIntegrations(previousNamespace, previousName);
   persistIntegrations();
   els.uploadName.hidden = true;
