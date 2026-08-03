@@ -519,7 +519,10 @@ function renderScopePicker() {
 }
 
 // Identity and sign-out. The oauth-proxy sidecar owns the session, so signing
-// out means hitting its endpoint rather than clearing anything here. In local
+// out means hitting its endpoint (/oauth/ is the openshift fork's default
+// proxy prefix) rather than clearing anything here. This ends the proxy
+// session only: the cluster OAuth server's SSO session survives, so signing
+// in again without ending that session too returns the same user. In local
 // mode there is no proxy and no session, so nothing is shown.
 function renderUserMenu() {
   if (state.local || !state.user) return '';

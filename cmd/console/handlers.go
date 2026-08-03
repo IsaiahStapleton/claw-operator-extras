@@ -96,7 +96,7 @@ func buildRunViews(runs []Run, edges []Handoff) []RunView {
 // resolveStore turns a request into the store for one Claw, under the
 // logged-in user's identity. In local mode there is one implicit Claw and no
 // cluster; in cluster mode the namespace and claw come from the query string
-// and every downstream call is impersonated.
+// and every downstream call runs as the logged-in user.
 func (s *server) resolveStore(r *http.Request) (*Store, error) {
 	if s.localDir != "" {
 		s.mu.Lock()

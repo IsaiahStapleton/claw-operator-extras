@@ -25,6 +25,7 @@ package main
 import (
 	"archive/tar"
 	"context"
+	"encoding/base64"
 	"io"
 	"os"
 	"path"
@@ -40,6 +41,9 @@ const maxSessionFileBytes = 256 << 20
 
 // maxNoteBytes caps one memory note; notes are prose, not logs.
 const maxNoteBytes = 4 << 20
+
+// maxAgentConfigBytes caps the openclaw.json read for agent identities.
+const maxAgentConfigBytes = 1 << 20
 
 // maxBatchBytes bounds the total retained from one batched read, since every
 // body is held at once; files past the budget are left unread and reported as
@@ -134,7 +138,10 @@ type sessionSource interface {
 	// read. Agents are listed separately from their files because a Claw may
 	// run an agent backend whose on-disk layout this console does not parse —
 	// the agent still exists, and saying so beats implying it does not.
-	index(ctx context.Context) (agents []string, files []sessionFile, err error)
+	// agentConfig is the Claw's own openclaw.json (nil when unreadable), from
+	// which agent display identities are derived; it rides along with the
+	// index so reading it costs no extra round trip into the pod.
+	index(ctx context.Context) (agents []string, files []sessionFile, agentConfig []byte, err error)
 	// read returns one session file's bytes.
 	read(ctx context.Context, agent, name string) ([]byte, error)
 	// readMany fetches several files at once. Sources where a read is a
@@ -173,10 +180,10 @@ type dirSource struct{ root string }
 
 func (d dirSource) describe() string { return d.root }
 
-func (d dirSource) index(_ context.Context) ([]string, []sessionFile, error) {
+func (d dirSource) index(_ context.Context) ([]string, []sessionFile, []byte, error) {
 	dirs, err := os.ReadDir(d.root)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	var agents []string
 	var out []sessionFile
@@ -200,7 +207,12 @@ func (d dirSource) index(_ context.Context) ([]string, []sessionFile, error) {
 			})
 		}
 	}
-	return agents, out, nil
+	home := filepath.Dir(strings.TrimSuffix(d.root, string(filepath.Separator)))
+	config, err := os.ReadFile(filepath.Join(home, "openclaw.json"))
+	if err != nil {
+		config = nil // a Claw without a readable config still has agents
+	}
+	return agents, out, config, nil
 }
 
 // readMany on a local directory is just repeated reads: there is no round
@@ -304,22 +316,26 @@ func (e execSource) describe() string {
 
 // index runs one `find` per refresh rather than one stat per file: the round
 // trip, not the bytes, is what costs here.
-func (e execSource) index(ctx context.Context) ([]string, []sessionFile, error) {
+func (e execSource) index(ctx context.Context) ([]string, []sessionFile, []byte, error) {
 	dir := shellQuote(e.agentsDir)
-	// Two labelled sections in one round trip: the agent directories, then the
-	// session files this console knows how to read. %P is the path relative to
-	// the search root, giving "<agent>/sessions/<file>".
+	// Three labelled sections in one round trip: the agent directories, the
+	// session files this console knows how to read, and the Claw's own config,
+	// from which agent display names are derived. %P is the path relative to
+	// the search root, giving "<agent>/sessions/<file>". The config is base64
+	// encoded onto a single line so its content cannot imitate index rows.
 	script := "find " + dir + " -mindepth 1 -maxdepth 1 -type d -printf 'A\\t%P\\n' 2>/dev/null; " +
 		"find " + dir + " -mindepth 3 -maxdepth 3 -path '*/sessions/*' -type f -name '*.jsonl' " +
-		"-printf 'F\\t%P\\t%s\\t%T@\\n' 2>/dev/null; true"
+		"-printf 'F\\t%P\\t%s\\t%T@\\n' 2>/dev/null; " +
+		"printf 'C\\t'; head -c " + strconv.Itoa(maxAgentConfigBytes) + " " +
+		shellQuote(e.clawHome()+"/openclaw.json") + " 2>/dev/null | base64 -w0; printf '\\n'; true"
 
 	res, err := e.srv.execInPod(ctx, e.identity, e.namespace, e.pod, e.container,
 		[]string{"sh", "-c", script})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	agents, files := parseIndexOutput(string(res.Stdout))
-	return agents, files, nil
+	agents, files, config := parseIndexOutput(string(res.Stdout))
+	return agents, files, config, nil
 }
 
 // readMany streams one tar containing every requested file, turning what
@@ -462,9 +478,10 @@ func (e execSource) read(ctx context.Context, agent, name string) ([]byte, error
 
 // parseIndexOutput reads the labelled find output, skipping any row it cannot
 // make sense of rather than failing the whole index.
-func parseIndexOutput(out string) ([]string, []sessionFile) {
+func parseIndexOutput(out string) ([]string, []sessionFile, []byte) {
 	var agents []string
 	var files []sessionFile
+	var config []byte
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimRight(line, "\r")
 		if line == "" {
@@ -474,6 +491,12 @@ func parseIndexOutput(out string) ([]string, []sessionFile) {
 		if len(parts) == 2 && parts[0] == "A" {
 			if parts[1] != "" {
 				agents = append(agents, parts[1])
+			}
+			continue
+		}
+		if len(parts) == 2 && parts[0] == "C" {
+			if decoded, err := base64.StdEncoding.DecodeString(parts[1]); err == nil {
+				config = decoded
 			}
 			continue
 		}
@@ -504,7 +527,7 @@ func parseIndexOutput(out string) ([]string, []sessionFile) {
 		}
 		files = append(files, sessionFile{Agent: agent, Name: rest, Size: size, ModTime: ms})
 	}
-	return agents, files
+	return agents, files, config
 }
 
 // shellQuote makes a value safe to embed in the single `sh -c` string the

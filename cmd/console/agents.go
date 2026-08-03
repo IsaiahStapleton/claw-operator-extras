@@ -15,15 +15,15 @@ limitations under the License.
 */
 
 // Agent-level derivation: status, current step, and display metadata. Ported
-// from the home-server agent-monitor server, with optional presentation
-// metadata (emoji/title/desc) resolved from the AGENT_META config.
+// from the home-server agent-monitor server. Display names come from the
+// Claw's own openclaw.json, so the console reports what the Claw actually
+// calls its agents rather than what a deployment-time map claims.
 
 package main
 
 import (
-	"strings"
+	"encoding/json"
 	"time"
-	"unicode"
 )
 
 // activityActiveWindow: transcript activity within this window marks an agent
@@ -31,12 +31,10 @@ import (
 // trajectory sidecars).
 const activityActiveWindow = 5 * time.Minute
 
-// AgentMeta is optional presentation metadata for one agent, supplied via the
-// AGENT_META env var. All fields are cosmetic; the console works without them.
+// AgentMeta is one agent's display identity as its own Claw configures it.
 type AgentMeta struct {
 	Emoji string `json:"emoji"`
 	Title string `json:"title"`
-	Desc  string `json:"desc"`
 }
 
 // AgentView is the /api/agents row: live status plus resolved display fields.
@@ -48,17 +46,17 @@ type AgentView struct {
 	RunCount    int     `json:"runCount"`
 	Emoji       string  `json:"emoji"`
 	Title       string  `json:"title"`
-	Desc        string  `json:"desc"`
 	Model       string  `json:"model"`
 	Provider    string  `json:"provider"`
 }
 
-// resolveMeta fills in emoji/title/desc, falling back to sensible defaults so
-// the UI never renders blanks when AGENT_META omits an agent.
+// resolveMeta looks an agent up in its Claw's configured identities. An agent
+// the config does not name is shown by its raw ID: an honest label, where an
+// invented prettier one would misidentify it.
 func resolveMeta(name string, meta map[string]AgentMeta) AgentMeta {
 	m := meta[name]
 	if m.Title == "" {
-		m.Title = humanizeName(name)
+		m.Title = name
 	}
 	if m.Emoji == "" {
 		m.Emoji = "🤖"
@@ -66,20 +64,40 @@ func resolveMeta(name string, meta map[string]AgentMeta) AgentMeta {
 	return m
 }
 
-func humanizeName(name string) string {
-	parts := strings.FieldsFunc(name, func(r rune) bool { return r == '-' || r == '_' || r == '.' })
-	for i, p := range parts {
-		if p == "" {
+// parseAgentIdentities extracts each agent's display identity from a Claw's
+// own openclaw.json. Unreadable or unparseable config degrades to raw agent
+// IDs rather than failing the scan.
+func parseAgentIdentities(raw []byte) map[string]AgentMeta {
+	out := map[string]AgentMeta{}
+	if len(raw) == 0 {
+		return out
+	}
+	var cfg struct {
+		Agents struct {
+			List []struct {
+				ID       string `json:"id"`
+				Name     string `json:"name"`
+				Identity struct {
+					Name  string `json:"name"`
+					Emoji string `json:"emoji"`
+				} `json:"identity"`
+			} `json:"list"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return out
+	}
+	for _, a := range cfg.Agents.List {
+		if a.ID == "" {
 			continue
 		}
-		r := []rune(p)
-		r[0] = unicode.ToUpper(r[0])
-		parts[i] = string(r)
+		title := a.Identity.Name
+		if title == "" {
+			title = a.Name
+		}
+		out[a.ID] = AgentMeta{Title: title, Emoji: a.Identity.Emoji}
 	}
-	if len(parts) == 0 {
-		return name
-	}
-	return strings.Join(parts, " ")
+	return out
 }
 
 // buildAgentViews computes per-agent status/currentStep exactly like the Node
@@ -133,11 +151,11 @@ func (s *server) buildAgentViews(snap *Snapshot, now time.Time) []AgentView {
 			lastRunAt = &iso
 		}
 
-		meta := resolveMeta(name, s.agentMeta)
+		meta := resolveMeta(name, snap.AgentIdentities)
 		views = append(views, AgentView{
 			Name: name, Status: status, CurrentStep: currentStep,
 			LastRunAt: lastRunAt, RunCount: len(runs),
-			Emoji: meta.Emoji, Title: meta.Title, Desc: meta.Desc,
+			Emoji: meta.Emoji, Title: meta.Title,
 			Model: model, Provider: provider,
 		})
 	}

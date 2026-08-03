@@ -15,8 +15,8 @@ limitations under the License.
 */
 
 // Which Claws may this user see? The answer comes from the API server under
-// the user's own identity — the console lists Claws impersonated, so a user
-// only ever learns about namespaces they already have access to.
+// the user's own forwarded token, so a user only ever learns about
+// namespaces they already have access to.
 
 package main
 
@@ -53,7 +53,7 @@ type clawList struct {
 	} `json:"items"`
 }
 
-// listClaws returns every Claw the impersonated user can see. A cluster-wide
+// listClaws returns every Claw the logged-in user can see. A cluster-wide
 // list is tried first because it is one request, but most users hold only
 // namespace-scoped RBAC and are refused it — so a 403 falls back to listing
 // each namespace they can see. A user with access to nothing gets an empty

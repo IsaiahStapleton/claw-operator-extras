@@ -18,8 +18,36 @@ oc new-project agent-console
 oc create secret generic agent-console-cookie \
   --from-literal=session_secret="$(head -c 24 /dev/urandom | base64)"
 
+# The OAuth client secret. The proxy authenticates to the cluster OAuth
+# server with it, and the OAuthClient below must carry the same value.
+oc create secret generic agent-console-oauth-client \
+  --from-literal=client_secret="$(head -c 32 /dev/urandom | base64 -w 0)"
+
 oc apply -k config/console
 oc get route agent-console -o jsonpath='{.spec.host}{"\n"}'
+```
+
+The console's OAuth client is a dedicated cluster-scoped `OAuthClient`, not
+the service account: a service-account OAuth client may only request the
+`user:info` and `user:check-access` scopes, and a token limited to those
+cannot read Claws or exec into pods. Creating it requires cluster-admin (as
+binding the previous impersonation ClusterRole did) and needs the route host,
+so it comes after the apply:
+
+```sh
+HOST=$(oc get route agent-console -n agent-console -o jsonpath='{.spec.host}')
+SECRET=$(oc get secret agent-console-oauth-client -n agent-console \
+  -o jsonpath='{.data.client_secret}' | base64 -d)
+oc apply -f - <<EOF
+apiVersion: oauth.openshift.io/v1
+kind: OAuthClient
+metadata:
+  name: agent-console
+secret: $SECRET
+grantMethod: auto
+redirectURIs:
+  - https://$HOST/oauth/callback
+EOF
 ```
 
 The console claims a 1 GiB `ReadWriteOnce` volume for what it has observed about
@@ -33,10 +61,12 @@ there rather than at apply time.
 
 ## How access works
 
-The console holds **no standing permission to read any Claw's data**. It has
-one privilege: impersonating the logged-in user. Every Kubernetes call — both
-listing Claws and reading session files — is made as that user, so the API
-server decides what they see.
+The console holds **no standing permission to read any Claw's data**, and no
+impersonation power. The oauth-proxy forwards each logged-in user's own OAuth
+access token, and every Kubernetes call (both listing Claws and reading
+session files) is authorized by that token, so the API server decides what
+they see. A compromised console can act only with the tokens of users who
+actually logged in, and only until those tokens expire.
 
 That matters because agent transcripts contain whatever the agent saw,
 including tool output. Enforcing in the API server rather than filtering in
@@ -52,6 +82,13 @@ Exec is the effective bar. A user with view-only access to a namespace will
 see the Claw in the picker but get a permission error opening it. If that is
 the wrong bar for your users, the data path is behind an interface — see the
 gateway-API note in the repo README.
+
+Sign out (avatar menu) ends the oauth-proxy session and returns to the login
+page. The cluster OAuth server's own SSO session is not ended (OpenShift's
+logout endpoint is POST-only and its session cookie is not sent cross-site),
+so signing in again returns the same user. To switch users, also end the
+cluster session: use a private window, or delete the `ssn` cookie on the
+`oauth-openshift` host.
 
 ## Why exec rather than mounting the volumes
 
@@ -86,10 +123,13 @@ silently dropped.
 | `CLAW_CONTAINER` | `gateway` | Container in the Claw pod holding that state |
 | `AGENT_DATA_DIR` | unset | Setting it switches to local single-directory mode (development); leave unset in the cluster |
 | `EXCLUDED_AGENTS` | unset | Comma-separated agent directories to hide |
-| `AGENT_META` | unset | JSON map of `{agent: {emoji, title, desc}}` for display |
 | `MEMORY_PATH_PATTERN` | `(?:^\|/)(?:memory\|wiki)/[\w\-./]*\.md` | Regexp matching vault note paths. The default covers all three of OpenClaw's stores; override it for a vault kept elsewhere. |
 | `CONSOLE_CACHE_MS` | `2000` | Minimum interval between re-indexes |
 | `CONSOLE_STATE_DIR` | unset | Where observed memory writes are persisted. Unset (or unwritable) degrades to an in-memory record that the memory page reports as such. |
+
+Agent display names and emoji are read from each Claw's own `openclaw.json`
+(`agents.list[].identity`), so the console shows what the Claw actually calls
+its agents. An agent the config does not name is shown by its raw ID.
 
 ## What counts as a memory write
 

@@ -43,12 +43,6 @@ spec:
             # restart, which the memory page then says outright.
             - name: CONSOLE_STATE_DIR
               value: /var/lib/agent-console
-            # Optional display metadata, keyed by agent directory name.
-            - name: AGENT_META
-              value: |
-                {"default":{"emoji":"🌱","title":"Podling","desc":"Coordinator — planning, ops, delegation"},
-                 "stitch":{"emoji":"🧵","title":"Stitch","desc":"GitHub portfolio maintenance"},
-                 "quill":{"emoji":"🪶","title":"Quill","desc":"Meeting → follow-up work"}}
           ports:
             - name: http
               containerPort: 8080
@@ -85,7 +79,16 @@ spec:
           imagePullPolicy: IfNotPresent
           args:
             - --provider=openshift
-            - --openshift-service-account=agent-console
+            # A dedicated OAuthClient rather than the service account: SA
+            # OAuth clients may not request user:full, and without that scope
+            # the forwarded token could not read Claws or exec into pods.
+            - --client-id=agent-console
+            - --client-secret-file=/etc/proxy/oauth-client/client_secret
+            - --scope=user:full
+            # The user's token rides to the console on every request and is
+            # the sole credential for its Kubernetes reads. The console holds
+            # no impersonation power of its own.
+            - --pass-access-token=true
             - --upstream=http://127.0.0.1:8080
             - --http-address=0.0.0.0:4180
             - --https-address=
@@ -107,6 +110,9 @@ spec:
             - name: cookie-secret
               mountPath: /etc/proxy/secrets
               readOnly: true
+            - name: oauth-client-secret
+              mountPath: /etc/proxy/oauth-client
+              readOnly: true
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -124,6 +130,9 @@ spec:
         - name: cookie-secret
           secret:
             secretName: agent-console-cookie
+        - name: oauth-client-secret
+          secret:
+            secretName: agent-console-oauth-client
         - name: state
           persistentVolumeClaim:
             claimName: agent-console-state

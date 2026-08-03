@@ -31,9 +31,10 @@ and the memory-vault writes they commit.
 
 It reads a Claw's session files through the Kubernetes exec API rather than by
 mounting its volume, because Claw home PVCs are ReadWriteOnce and one pod
-cannot mount many of them. Access is enforced by impersonation: the console has
-no standing permission to read any Claw, only to act as the logged-in user, so
-the API server decides what each person sees.
+cannot mount many of them. Access is enforced by the user's own credential:
+the oauth-proxy forwards each logged-in user's OAuth token, every Kubernetes
+call is authorized by it, and the console has no standing permission to read
+any Claw, so the API server decides what each person sees.
 
 ```sh
 make console-run-local CONSOLE_LOCAL_DATA_DIR=/path/to/agents   # local preview

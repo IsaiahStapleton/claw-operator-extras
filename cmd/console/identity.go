@@ -15,14 +15,14 @@ limitations under the License.
 */
 
 // Who is asking. The oauth-proxy sidecar authenticates the request and
-// forwards the identity in headers; the same header set the deployer reads.
+// forwards the user's identity headers plus their OAuth access token
+// (X-Forwarded-Access-Token). The token is what authorizes every Kubernetes
+// read; the API server validates it itself, so a spoofed header alone grants
+// nothing. The username headers are display-only.
 //
-// These headers are trusted, so the console must only ever be reached through
-// the proxy. That is enforced at the network layer, not here: the Service
+// The console must still only be reached through the proxy: the Service
 // exposes only the proxy port (4180), and the app port (8080) is reachable
-// only on pod loopback, where the proxy is the sole client. Nothing downstream
-// of the proxy can set X-Forwarded-* / X-Auth-Request-* and be believed. If a
-// future change exposes 8080, this trust assumption breaks with it.
+// only on pod loopback, where the proxy is the sole client.
 
 package main
 
@@ -59,10 +59,10 @@ func currentUser(r *http.Request) (string, error) {
 
 // devMode reports whether the console is running in an explicitly-flagged
 // development configuration. The local-auth escape hatches — a fixed
-// DEVELOPER_USERNAME, a DEVELOPER_BEARER_TOKEN standing in for the
-// service-account token, TLS roots falling back to the public bundle — each
-// weaken the tenant isolation a cluster deployment depends on, so none of them
-// take effect unless this is set. In a cluster it never is, so a stray dev var
+// DEVELOPER_USERNAME, a DEVELOPER_BEARER_TOKEN standing in for the forwarded
+// access token, TLS roots falling back to the public bundle — each weaken the
+// tenant isolation a cluster deployment depends on, so none of them take
+// effect unless this is set. In a cluster it never is, so a stray dev var
 // cannot silently turn the security model off.
 func devMode() bool {
 	return strings.EqualFold(strings.TrimSpace(os.Getenv("AGENT_CONSOLE_DEV")), "true")
@@ -73,25 +73,14 @@ func currentIdentity(r *http.Request) (userIdentity, error) {
 	if err != nil {
 		return userIdentity{}, err
 	}
-	return userIdentity{Name: user, Groups: impersonationGroups(r)}, nil
-}
-
-func impersonationGroups(r *http.Request) []string {
-	groups := []string{}
-	seen := map[string]bool{}
-	for _, header := range []string{"X-Forwarded-Groups", "X-Auth-Request-Groups"} {
-		for _, value := range r.Header.Values(header) {
-			for _, group := range strings.Split(value, ",") {
-				group = strings.TrimSpace(group)
-				if group == "" || seen[group] {
-					continue
-				}
-				seen[group] = true
-				groups = append(groups, group)
-			}
-		}
+	token := strings.TrimSpace(r.Header.Get("X-Forwarded-Access-Token"))
+	if token == "" && devMode() {
+		token = strings.TrimSpace(os.Getenv("DEVELOPER_BEARER_TOKEN"))
 	}
-	return groups
+	if token == "" {
+		return userIdentity{}, errors.New("no OAuth access token was forwarded to the console (is oauth-proxy running with --pass-access-token?)")
+	}
+	return userIdentity{Name: user, Token: token}, nil
 }
 
 // Names are interpolated into API paths and exec arguments, so they are

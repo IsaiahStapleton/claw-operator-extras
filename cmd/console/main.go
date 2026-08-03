@@ -18,10 +18,11 @@ limitations under the License.
 // every namespace the logged-in user can reach.
 //
 // Two modes. In cluster mode it discovers Claws through the Kubernetes API and
-// reads their session files by exec'ing into their pods, impersonating the
-// user on every call so the API server decides what they may see. In local
-// mode (AGENT_DATA_DIR set) it reads one directory straight off disk, which is
-// what `make console-run-local` and the tests use.
+// reads their session files by exec'ing into their pods, carrying the
+// logged-in user's own forwarded OAuth token on every call so the API server
+// decides what they may see. In local mode (AGENT_DATA_DIR set) it reads one
+// directory straight off disk, which is what `make console-run-local` and the
+// tests use.
 //
 // It never writes: only GET routes exist, and every command sent into a pod is
 // a read.
@@ -29,8 +30,9 @@ limitations under the License.
 package main
 
 import (
+	"crypto/sha256"
 	"embed"
-	"encoding/json"
+	"encoding/hex"
 	"io/fs"
 	"log"
 	"net/http"
@@ -54,22 +56,20 @@ const (
 )
 
 type server struct {
-	// Kubernetes access (cluster mode).
-	apiServer   string
-	client      *http.Client
-	bearerToken string
-	impersonate bool
-	agentsDir   string
-	container   string
+	// Kubernetes access (cluster mode). No credential lives here: every
+	// tenant read is authorized by the requesting user's forwarded token.
+	apiServer string
+	client    *http.Client
+	agentsDir string
+	container string
 
 	// Local mode: one directory, no cluster.
 	localDir string
 
-	hostname  string
-	agentMeta map[string]AgentMeta
-	cacheTTL  time.Duration
-	excluded  []string
-	static    fs.FS
+	hostname string
+	cacheTTL time.Duration
+	excluded []string
+	static   fs.FS
 
 	// stateDir persists what the console has observed. Empty means the record
 	// lives only in memory and is lost on restart.
@@ -86,8 +86,8 @@ type server struct {
 	// Watchers are per Claw, not per user. What a Claw's notes did is a fact
 	// about the Claw; sharing the observation is what lets one user see a diff
 	// the console happened to catch while another was looking. Reaching a
-	// watcher at all still requires an impersonated read the API server
-	// authorized, so this widens no one's access.
+	// watcher at all still requires a read the API server authorized under the
+	// user's own token, so this widens no one's access.
 	watchers map[string]*memoryWatcher
 }
 
@@ -148,7 +148,6 @@ func newServer() (*server, error) {
 		agentsDir: getenv("CLAW_AGENTS_DIR", defaultAgentsDir),
 		container: getenv("CLAW_CONTAINER", defaultContainer),
 		hostname:  hostname,
-		agentMeta: parseAgentMeta(os.Getenv("AGENT_META")),
 		cacheTTL:  time.Duration(getenvInt("CONSOLE_CACHE_MS", defaultCacheMs)) * time.Millisecond,
 		excluded:  excluded,
 		static:    sub,
@@ -176,17 +175,17 @@ func newServer() (*server, error) {
 	if s.client, err = kubeHTTPClient(); err != nil {
 		return nil, err
 	}
-	if s.bearerToken, s.impersonate, err = kubeBearerToken(); err != nil {
-		return nil, err
-	}
 	return s, nil
 }
 
-// storeFor returns the cached store for one user's view of one Claw. Keying by
-// user as well as by Claw keeps a snapshot built under one identity from ever
-// being served to another.
+// storeFor returns the cached store for one user's view of one Claw. The key
+// includes the login token (hashed, so raw credentials are not spread through
+// map keys): a snapshot built under one credential is never served to
+// another, and a fresh login pays one cold scan rather than inheriting a
+// store whose captured token may have expired.
 func (s *server) storeFor(identity userIdentity, namespace, claw, pod string) *Store {
-	key := identity.Name + "\x00" + namespace + "\x00" + claw + "\x00" + pod
+	sum := sha256.Sum256([]byte(identity.Token))
+	key := identity.Name + "\x00" + hex.EncodeToString(sum[:8]) + "\x00" + namespace + "\x00" + claw + "\x00" + pod
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.storeSeen == nil {
@@ -254,18 +253,6 @@ func (s *server) handleStatic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.ServeFileFS(w, r, s.static, clean)
-}
-
-func parseAgentMeta(raw string) map[string]AgentMeta {
-	meta := map[string]AgentMeta{}
-	if raw == "" {
-		return meta
-	}
-	if err := json.Unmarshal([]byte(raw), &meta); err != nil {
-		log.Printf("AGENT_META ignored (invalid JSON): %v", err)
-		return map[string]AgentMeta{}
-	}
-	return meta
 }
 
 func getenv(key, fallback string) string {

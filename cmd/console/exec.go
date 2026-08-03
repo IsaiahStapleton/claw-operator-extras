@@ -18,8 +18,9 @@ limitations under the License.
 //
 // Claw home volumes are ReadWriteOnce, so a single console pod cannot mount
 // the volumes of every Claw it reports on — exec is how one console reaches
-// many Claws across many namespaces. The request is impersonated, so a user
-// who cannot exec in a namespace cannot read that namespace's agents either.
+// many Claws across many namespaces. The request carries the user's own
+// forwarded token, so a user who cannot exec in a namespace cannot read that
+// namespace's agents either.
 
 package main
 

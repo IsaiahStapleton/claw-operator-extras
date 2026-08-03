@@ -44,12 +44,16 @@ type Session struct {
 
 // Snapshot is one cached scan of the data directory.
 type Snapshot struct {
-	OK              bool
-	Error           string
-	Agents          []string
-	Runs            []Run
-	Sessions        []Session
-	Activity        map[string]int64 // agent -> last transcript mtime (ms), 0 if none
+	OK       bool
+	Error    string
+	Agents   []string
+	Runs     []Run
+	Sessions []Session
+	Activity map[string]int64 // agent -> last transcript mtime (ms), 0 if none
+	// AgentIdentities maps agent ID to the display identity the Claw's own
+	// config declares, so names come from the Claw rather than from console
+	// configuration.
+	AgentIdentities map[string]AgentMeta
 	BadLines        int
 	ScannedFiles    int
 	UnreadableFiles int
@@ -170,12 +174,13 @@ func (s *Store) scan() *Snapshot {
 	defer cancel()
 
 	snap := &Snapshot{OK: true, Activity: map[string]int64{}}
-	agentDirs, files, err := s.source.index(ctx)
+	agentDirs, files, agentConfig, err := s.source.index(ctx)
 	if err != nil {
 		snap.OK = false
 		snap.Error = "agent data unreadable: " + errCode(err)
 		return snap
 	}
+	snap.AgentIdentities = parseAgentIdentities(agentConfig)
 	now := s.now()
 
 	// Group the flat index by agent so each agent is summarized independently.

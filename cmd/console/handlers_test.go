@@ -20,6 +20,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -30,11 +32,10 @@ import (
 func testServer(t *testing.T, root string) *server {
 	t.Helper()
 	return &server{
-		localDir:  root,
-		hostname:  "test-host",
-		cacheTTL:  0,
-		agentMeta: map[string]AgentMeta{"main": {Emoji: "🌱", Title: "Podling", Desc: "Coordinator"}},
-		stores:    map[string]*Store{},
+		localDir: root,
+		hostname: "test-host",
+		cacheTTL: 0,
+		stores:   map[string]*Store{},
 	}
 }
 
@@ -75,7 +76,20 @@ func fixtureRootWithNotes(t *testing.T, now time.Time) string {
 	// consolidation with no tool call at all.
 	addNote(t, root, "workspace/memory/gateway.md", "# gateway\nOOMKilled", now.Add(-17*time.Minute))
 	addNote(t, root, "agents/main/memory/dreaming/deep/today.md", "consolidated overnight", now.Add(-1*time.Hour))
+	// The Claw's own config names "main"; "security" is deliberately unlisted
+	// so tests cover the raw-ID fallback.
+	writeAgentConfig(t, root, `{"agents":{"list":[
+		{"id":"main","name":"main","identity":{"name":"Podling","emoji":"🌱"}}]}}`)
 	return root
+}
+
+// writeAgentConfig puts an openclaw.json into the Claw home above the agents
+// dir, where the scan reads it.
+func writeAgentConfig(t *testing.T, root, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(filepath.Dir(root), "openclaw.json"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write openclaw.json: %v", err)
+	}
 }
 
 func getJSON(t *testing.T, s *server, method, target string, h func(http.ResponseWriter, *http.Request)) (int, map[string]any) {
@@ -113,12 +127,13 @@ func TestHandleAgentsReportsStatusAndResolvedMeta(t *testing.T) {
 	if step, _ := byName["security"]["currentStep"].(string); !strings.Contains(step, "oc get pods") {
 		t.Fatalf("currentStep = %q, want the last event of the running run", step)
 	}
-	// AGENT_META supplies display fields; unlisted agents get sane defaults.
+	// The Claw's own config supplies display fields; unlisted agents keep
+	// their raw ID rather than an invented name.
 	if got := byName["main"]["title"]; got != "Podling" {
-		t.Fatalf("main title = %v, want Podling from AGENT_META", got)
+		t.Fatalf("main title = %v, want Podling from the Claw's openclaw.json", got)
 	}
-	if got := byName["security"]["title"]; got != "Security" {
-		t.Fatalf("security title = %v, want the humanized default", got)
+	if got := byName["security"]["title"]; got != "security" {
+		t.Fatalf("security title = %v, want the raw agent ID", got)
 	}
 	if got := byName["security"]["emoji"]; got != "🤖" {
 		t.Fatalf("security emoji = %v, want the default", got)
@@ -481,13 +496,29 @@ func TestClampInt(t *testing.T) {
 	}
 }
 
-func TestParseAgentMetaIgnoresInvalidJSON(t *testing.T) {
-	if got := parseAgentMeta("not json"); len(got) != 0 {
-		t.Fatalf("invalid AGENT_META should yield an empty map, got %v", got)
+func TestParseAgentIdentities(t *testing.T) {
+	if got := parseAgentIdentities([]byte("not json")); len(got) != 0 {
+		t.Fatalf("unparseable config should yield an empty map, got %v", got)
 	}
-	got := parseAgentMeta(`{"main":{"emoji":"🌱","title":"Podling","desc":"Coordinator"}}`)
-	if got["main"].Title != "Podling" {
-		t.Fatalf("parsed meta = %+v", got)
+	if got := parseAgentIdentities(nil); len(got) != 0 {
+		t.Fatalf("missing config should yield an empty map, got %v", got)
+	}
+	got := parseAgentIdentities([]byte(`{"agents":{"list":[
+		{"id":"default","name":"Podling","identity":{"name":"Podling"}},
+		{"id":"stitch","name":"stitch","identity":{"name":"Stitch","emoji":"🧵"}},
+		{"id":"plain","name":"plain"},
+		{"name":"no-id"}]}}`))
+	if got["default"].Title != "Podling" {
+		t.Fatalf("default = %+v, want identity name", got["default"])
+	}
+	if got["stitch"].Title != "Stitch" || got["stitch"].Emoji != "🧵" {
+		t.Fatalf("stitch = %+v, want identity name and emoji", got["stitch"])
+	}
+	if got["plain"].Title != "plain" {
+		t.Fatalf("plain = %+v, want the name field when identity is absent", got["plain"])
+	}
+	if len(got) != 3 {
+		t.Fatalf("entries without an id must be skipped, got %v", got)
 	}
 }
 
@@ -520,8 +551,8 @@ func TestValidateName(t *testing.T) {
 }
 
 // resolveStore is where the security model is enforced: no forwarded identity
-// is a 401, a malformed namespace or claw is a 400, both before any cluster
-// call is made.
+// or no forwarded token is a 401, a malformed namespace or claw is a 400,
+// both before any cluster call is made.
 func TestResolveStoreRejectsBadRequestsBeforeAnyClusterCall(t *testing.T) {
 	s := &server{stores: map[string]*Store{}} // cluster mode: localDir is empty
 
@@ -530,11 +561,34 @@ func TestResolveStoreRejectsBadRequestsBeforeAnyClusterCall(t *testing.T) {
 		t.Fatalf("missing identity: status = %d, want 401", statusCodeFor(err))
 	}
 
+	// A username header without the access token must not pass: the token is
+	// what authorizes reads, and outside dev mode there is no substitute.
+	req = httptest.NewRequest("GET", "/api?namespace=isaiah-claw&claw=podling", nil)
+	req.Header.Set("X-Forwarded-User", "alice")
+	if _, err := s.resolveStore(req); statusCodeFor(err) != http.StatusUnauthorized {
+		t.Fatalf("missing token: status = %d, want 401", statusCodeFor(err))
+	}
+
 	for _, q := range []string{"namespace=Bad_NS&claw=podling", "namespace=isaiah-claw&claw=..%2f"} {
 		req := httptest.NewRequest("GET", "/api?"+q, nil)
 		req.Header.Set("X-Forwarded-User", "alice")
+		req.Header.Set("X-Forwarded-Access-Token", "sha256~alice-token")
 		if _, err := s.resolveStore(req); statusCodeFor(err) != http.StatusBadRequest {
 			t.Fatalf("%q: status = %d, want 400", q, statusCodeFor(err))
 		}
+	}
+}
+
+// The forwarded token is the sole credential on outbound calls; the console
+// must never attach one of its own or fall back to another user's.
+func TestSetAuthUsesTheForwardedToken(t *testing.T) {
+	s := &server{}
+	req := httptest.NewRequest("GET", "https://example.invalid/api", nil)
+	s.setAuth(req, userIdentity{Name: "alice", Token: "sha256~alice-token"})
+	if got := req.Header.Get("Authorization"); got != "Bearer sha256~alice-token" {
+		t.Fatalf("Authorization = %q, want the forwarded token", got)
+	}
+	if len(req.Header.Values("Impersonate-User"))+len(req.Header.Values("Impersonate-Group")) != 0 {
+		t.Fatalf("impersonation headers must not be set: %v", req.Header)
 	}
 }

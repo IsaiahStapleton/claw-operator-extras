@@ -15,9 +15,10 @@ limitations under the License.
 */
 
 // Kubernetes access, modeled on cmd/deployer: plain net/http against the API
-// server with impersonation headers, rather than a client library. Every
-// tenant-visible read is impersonated so the API server — not this process —
-// decides what the logged-in user may see.
+// server, rather than a client library. Every tenant-visible read carries the
+// logged-in user's own OAuth token, forwarded by the oauth-proxy, so the API
+// server (not this process) decides what they may see. The console holds no
+// credential of its own that can read tenant data.
 
 package main
 
@@ -37,16 +38,16 @@ import (
 )
 
 const (
-	inClusterCAPath    = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
-	inClusterTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-	clawAPIGroup       = "claw.sandbox.redhat.com"
-	clawAPIVersion     = "v1alpha1"
+	inClusterCAPath = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+	clawAPIGroup    = "claw.sandbox.redhat.com"
+	clawAPIVersion  = "v1alpha1"
 )
 
-// userIdentity is the logged-in user, as reported by the oauth-proxy.
+// userIdentity is the logged-in user: the display name the oauth-proxy
+// reported, and the OAuth access token that authorizes their reads.
 type userIdentity struct {
-	Name   string
-	Groups []string
+	Name  string
+	Token string
 }
 
 // apiError carries the API server's status code so handlers can pass an
@@ -103,42 +104,15 @@ func kubeHTTPClient() (*http.Client, error) {
 	}, nil
 }
 
-func kubeBearerToken() (string, bool, error) {
-	// A developer token stands in for the service-account token when running
-	// off-cluster, but only in dev mode: in a cluster the console must read as
-	// the logged-in user, never as its own identity. With the token but
-	// impersonation off, every tenant read runs unimpersonated, so that is
-	// announced loudly rather than left silent.
-	if devMode() {
-		if token := strings.TrimSpace(os.Getenv("DEVELOPER_BEARER_TOKEN")); token != "" {
-			impersonate := strings.EqualFold(os.Getenv("AGENT_CONSOLE_IMPERSONATE"), "true")
-			if !impersonate {
-				log.Printf("WARNING: DEVELOPER_BEARER_TOKEN set without AGENT_CONSOLE_IMPERSONATE; tenant reads run as the token's own identity, not the logged-in user")
-			}
-			return token, impersonate, nil
-		}
-	}
-	token, err := os.ReadFile(inClusterTokenPath)
-	if err != nil {
-		return "", false, fmt.Errorf("read Kubernetes service account token: %w", err)
-	}
-	return strings.TrimSpace(string(token)), true, nil
-}
-
-// setAuth applies the console's own credential plus, when impersonation is
-// enabled, the logged-in user's identity. Callers must pass the identity for
-// any request whose result reaches a browser.
+// setAuth authorizes a request with the logged-in user's forwarded OAuth
+// token. Callers must pass the identity for any request whose result reaches
+// a browser: what the user's token may not read, the console cannot read.
 func (s *server) setAuth(req *http.Request, identity userIdentity) {
-	req.Header.Set("Authorization", "Bearer "+s.bearerToken)
-	if s.impersonate {
-		req.Header.Set("Impersonate-User", identity.Name)
-		for _, group := range identity.Groups {
-			req.Header.Add("Impersonate-Group", group)
-		}
-	}
+	req.Header.Set("Authorization", "Bearer "+identity.Token)
 }
 
-// kubeGet performs an impersonated GET and decodes the response into out.
+// kubeGet performs a GET as the logged-in user and decodes the response into
+// out.
 func (s *server) kubeGet(ctx context.Context, identity userIdentity, requestPath string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.apiServer+requestPath, nil)
 	if err != nil {

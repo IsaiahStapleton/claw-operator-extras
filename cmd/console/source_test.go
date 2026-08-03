@@ -17,9 +17,38 @@ limitations under the License.
 package main
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 )
+
+func TestParseIndexOutputDecodesAgentConfig(t *testing.T) {
+	config := `{"agents":{"list":[{"id":"main","identity":{"name":"Shifty"}}]}}`
+	out := "A\tmain\n" +
+		"F\tmain/sessions/s1.trajectory.jsonl\t10\t1700000000.123\n" +
+		"C\t" + base64.StdEncoding.EncodeToString([]byte(config)) + "\n"
+	agents, files, got := parseIndexOutput(out)
+	if len(agents) != 1 || agents[0] != "main" {
+		t.Fatalf("agents = %v", agents)
+	}
+	if len(files) != 1 || files[0].Name != "s1.trajectory.jsonl" {
+		t.Fatalf("files = %v", files)
+	}
+	if string(got) != config {
+		t.Fatalf("config = %q, want the decoded openclaw.json", got)
+	}
+	if ids := parseAgentIdentities(got); ids["main"].Title != "Shifty" {
+		t.Fatalf("identities = %v, want Shifty for main", ids)
+	}
+
+	// A missing file yields an empty C row; garbage never becomes config.
+	if _, _, cfg := parseIndexOutput("C\t\n"); len(cfg) != 0 {
+		t.Fatalf("empty C row should carry no config, got %q", cfg)
+	}
+	if _, _, cfg := parseIndexOutput("C\t!!!not-base64\n"); cfg != nil {
+		t.Fatalf("undecodable C row should be ignored, got %q", cfg)
+	}
+}
 
 // Agent memory lives at "<home>/<agent>/memory", so the index globs
 // "<home>/*/memory" — which also matches "<home>/workspace/memory", already

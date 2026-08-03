@@ -1,34 +1,10 @@
-# The console reads tenant data only through impersonation: it holds no
-# standing permission to read any Claw's agents itself. Every request is made
-# as the logged-in user, so the API server decides what they may see and a bug
-# in this app cannot leak one tenant's transcripts to another.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: agent-console-impersonator
-rules:
-  - apiGroups:
-      - ""
-      - user.openshift.io
-    resources:
-      - users
-      - groups
-    verbs:
-      - impersonate
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: agent-console-impersonator
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: agent-console-impersonator
-subjects:
-  - kind: ServiceAccount
-    name: agent-console
-    namespace: agent-console
----
+# The console's service account holds no permission to read tenant data, and
+# no impersonation power: every Kubernetes read is authorized by the logged-in
+# user's own OAuth token, which the oauth-proxy forwards per request. A
+# compromised console can act only with the tokens of users who actually
+# logged in, and only until they expire; it cannot become an arbitrary user
+# or group.
+#
 # Lets the oauth-proxy sidecar validate tokens and delegate authorization.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

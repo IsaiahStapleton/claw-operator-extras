@@ -31,7 +31,8 @@ limitations under the License.
 //
 // The watcher is shared by every user who can read a Claw, because it describes
 // the Claw and not the viewer. That is safe precisely because reaching it at
-// all requires an impersonated read that the API server already authorized.
+// all requires a read the API server already authorized under the user's own
+// token.
 //
 // Two honest limits remain. Detection advances only when someone loads the
 // memory page — the console cannot poll on its own, since it holds no standing
