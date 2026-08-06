@@ -13,6 +13,13 @@ rather than quietly dropped.
 
 /* ------------------------------------------------------------------ utils */
 
+// Agents with no configured identity emoji render the OpenClaw mark (the same
+// asset as the masthead logo) instead of a generic placeholder. The <img>
+// sizes in em units so it tracks the surrounding font wherever emojis appear.
+const LOGO_EMOJI = '<img class="emoji-logo" src="openclaw.svg" alt="OpenClaw">';
+const emojiHtml = (e) => e || LOGO_EMOJI;
+
+
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -371,7 +378,7 @@ const agentByName = (name) => state.agents.find((a) => a.name === name);
 function agentMeta(name) {
   const a = agentByName(name);
   return {
-    emoji: (a && a.emoji) || '🤖',
+    emoji: emojiHtml(a && a.emoji),
     title: (a && a.title) || name || '—',
     desc: (a && a.desc) || '',
   };
@@ -525,14 +532,17 @@ function renderScopePicker() {
 // in again without ending that session too returns the same user. In local
 // mode there is no proxy and no session, so nothing is shown.
 function renderUserMenu() {
-  if (state.local || !state.user) return '';
-  const initials = state.user.replace(/@.*$/, '').split(/[.\-_ ]/)
-    .filter(Boolean).slice(0, 2).map((s) => s[0].toUpperCase()).join('') || '?';
+  if (state.local) return '';
+  if (!state.user && !state.scopeError) return '';
+  const initials = state.user
+    ? state.user.replace(/@.*$/, '').split(/[.\-_ ]/)
+        .filter(Boolean).slice(0, 2).map((s) => s[0].toUpperCase()).join('') || '?'
+    : '?';
   return `<div class="usermenu">
-    <button class="avatar" data-act="user-menu" title="${esc(state.user)}">${esc(initials)}</button>
+    <button class="avatar" data-act="user-menu" title="${esc(state.user || 'Session')}">${esc(initials)}</button>
     ${state.userMenuOpen ? `<div class="usermenu-pop">
-      <div class="usermenu-name">${esc(state.user)}</div>
-      <div class="usermenu-sub">Signed in through OpenShift</div>
+      <div class="usermenu-name">${state.user ? esc(state.user) : 'Unknown'}</div>
+      <div class="usermenu-sub">${state.scopeError ? 'Session may have expired' : 'Signed in through OpenShift'}</div>
       <a class="usermenu-out" href="/oauth/sign_out">Sign out</a>
     </div>` : ''}
   </div>`;
@@ -551,7 +561,7 @@ function renderSidebar(r) {
     const active = (r.isAgent || r.isReplay) && r.seg[1] === a.name;
     const m = stMeta(a.status);
     return `<a class="nav-item nav-agent${active ? ' active' : ''}" href="#/agents/${encodeURIComponent(a.name)}">
-      <span>${a.emoji || '🤖'}</span>
+      <span>${emojiHtml(a.emoji)}</span>
       <span class="nav-agent-name">${esc(a.title || a.name)}</span>
       <span class="dot sm${m.pulse ? ' pulse' : ''}" style="background:${m.dot}"></span>
     </a>`;
@@ -573,7 +583,7 @@ function renderToolbar(lockedAgent) {
     ? `<span class="locked-filter">Agent: <b>${esc(agentMeta(lockedAgent).title)}</b> 🔒</span>`
     : `<select class="field" data-act="filter-agent">
         <option value=""${!q.agent ? ' selected' : ''}>All agents</option>
-        ${state.agents.map((a) => `<option value="${esc(a.name)}"${q.agent === a.name ? ' selected' : ''}>${a.emoji || '🤖'} ${esc(a.title || a.name)}</option>`).join('')}
+        ${state.agents.map((a) => `<option value="${esc(a.name)}"${q.agent === a.name ? ' selected' : ''}>${a.emoji ? a.emoji + ' ' : ''}${esc(a.title || a.name)}</option>`).join('')}
        </select>`;
 
   const chips = ['ok', 'error', 'running', 'stale'].map((o) => {
@@ -698,7 +708,7 @@ function viewOverview() {
     const spark = sparkline(dayBuckets(mine, 14).map((d) => d.runs));
     return `<a class="agent-card" href="#/agents/${encodeURIComponent(a.name)}">
       <div class="agent-card-head">
-        <span class="agent-emoji">${a.emoji || '🤖'}</span>
+        <span class="agent-emoji">${emojiHtml(a.emoji)}</span>
         <span class="agent-ident">
           <span class="agent-name">${esc(a.title || a.name)}</span>
           <span class="agent-desc">${esc(a.desc || a.name)}</span>
@@ -818,7 +828,7 @@ function viewAgent(name) {
   return `<div class="page">
     <div class="crumbs"><a href="#/">Overview</a> / agents / ${esc(a.name)}</div>
     <div class="agent-head">
-      <span class="big-emoji">${a.emoji || '🤖'}</span>
+      <span class="big-emoji">${emojiHtml(a.emoji)}</span>
       <div class="agent-head-main">
         <div class="agent-head-title"><h1>${esc(a.title || a.name)}</h1>${statusPill(a.status)}</div>
         <div class="agent-head-meta">${esc(a.desc || a.name)} ·
@@ -1145,7 +1155,7 @@ function viewTopology() {
     nodeSvg.push(`<circle cx="${x}" cy="${y}" r="${r}" fill="var(--surface2)" stroke="${st.dot}"
       stroke-width="${off ? 2 : 3}"${off ? ' stroke-dasharray="4 3"' : ''}></circle>`);
     nodeLabels.push(`<a class="topo-node-emoji" href="#/agents/${encodeURIComponent(a.name)}"
-        style="left:${((x / 680) * 100).toFixed(2)}%;top:${((y / 380) * 100).toFixed(2)}%${off ? ';font-size:19px' : ''}">${a.emoji || '🤖'}</a>
+        style="left:${((x / 680) * 100).toFixed(2)}%;top:${((y / 380) * 100).toFixed(2)}%${off ? ';font-size:19px' : ''}">${emojiHtml(a.emoji)}</a>
       <a class="topo-node-label" href="#/agents/${encodeURIComponent(a.name)}"
         style="left:${((x / 680) * 100).toFixed(2)}%;top:${(((y + r + 10) / 380) * 100).toFixed(2)}%">
         <span class="n">${esc(a.title || a.name)}</span>
@@ -2008,7 +2018,8 @@ function render() {
   if (state.scopeError) {
     main = `<div class="page"><div class="empty-state"><div class="icon">🔒</div>
       <h2 class="display">Could not determine your access</h2>
-      <p>${esc(state.scopeError)}</p></div></div>`;
+      <p>${esc(state.scopeError)}</p>
+      <p style="margin-top:12px"><a href="/oauth/sign_out" class="link-btn" style="font-size:14px">Sign out and re-authenticate</a></p></div></div>`;
   } else if (!state.local && state.claws.length === 0) {
     main = `<div class="page"><div class="empty-state"><div class="icon">🗝️</div>
       <h2 class="display">No Claws you can read</h2>

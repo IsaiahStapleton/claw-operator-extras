@@ -135,8 +135,8 @@ func TestHandleAgentsReportsStatusAndResolvedMeta(t *testing.T) {
 	if got := byName["security"]["title"]; got != "security" {
 		t.Fatalf("security title = %v, want the raw agent ID", got)
 	}
-	if got := byName["security"]["emoji"]; got != "🤖" {
-		t.Fatalf("security emoji = %v, want the default", got)
+	if got := byName["security"]["emoji"]; got != "" {
+		t.Fatalf("security emoji = %v, want empty so the UI renders the OpenClaw logo fallback", got)
 	}
 
 	data := body["data"].(map[string]any)
@@ -519,6 +519,31 @@ func TestParseAgentIdentities(t *testing.T) {
 	}
 	if len(got) != 3 {
 		t.Fatalf("entries without an id must be skipped, got %v", got)
+	}
+}
+
+// OpenClaw 2026.7.2 migrated agents.list (array) to agents.entries (map keyed
+// by agent id). Both shapes must resolve, and entries wins when both exist
+// since the runtime treats it as the current source of truth.
+func TestParseAgentIdentitiesEntriesMap(t *testing.T) {
+	got := parseAgentIdentities([]byte(`{"agents":{"entries":{
+		"default":{"default":true,"name":"Podling","identity":{"name":"Podling"}},
+		"quill":{"name":"quill","identity":{"name":"Quill","emoji":"🪶"}},
+		"plain":{"name":"plain"}}}}`))
+	if got["default"].Title != "Podling" {
+		t.Fatalf("default = %+v, want identity name from entries map", got["default"])
+	}
+	if got["quill"].Title != "Quill" || got["quill"].Emoji != "🪶" {
+		t.Fatalf("quill = %+v, want identity name and emoji", got["quill"])
+	}
+	if got["plain"].Title != "plain" {
+		t.Fatalf("plain = %+v, want the name field when identity is absent", got["plain"])
+	}
+	got = parseAgentIdentities([]byte(`{"agents":{
+		"list":[{"id":"a","name":"FromList"}],
+		"entries":{"a":{"name":"FromEntries"}}}}`))
+	if got["a"].Title != "FromEntries" {
+		t.Fatalf("a = %+v, entries must win over list", got["a"])
 	}
 }
 

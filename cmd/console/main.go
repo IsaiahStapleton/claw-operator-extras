@@ -243,11 +243,18 @@ func (s *server) watcherFor(namespace, claw string) *memoryWatcher {
 
 // handleStatic serves the embedded SPA. The app uses hash routing, so unknown
 // non-API paths fall back to index.html.
+//
+// embed.FS carries no modtime, so http.ServeFileFS cannot set Last-Modified or
+// ETag. Without those, a browser that cached a prior deploy's app.js has no
+// way to revalidate and may serve stale JS indefinitely. Setting no-cache
+// forces revalidation on every navigation; the cost is one conditional GET per
+// page load, which is negligible for a handful of small embedded files.
 func (s *server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	clean := strings.TrimPrefix(r.URL.Path, "/")
 	if clean == "" {
 		clean = "index.html"
 	}
+	w.Header().Set("Cache-Control", "no-cache")
 	if _, err := fs.Stat(s.static, clean); err != nil {
 		http.ServeFileFS(w, r, s.static, "index.html")
 		return

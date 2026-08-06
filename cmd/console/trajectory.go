@@ -174,7 +174,7 @@ func droppedFields(e Event) []string {
 func promptText(e Event) string {
 	for _, k := range []string{"prompt", "text", "message", "input"} {
 		if s, ok := e.Data[k].(string); ok && strings.TrimSpace(s) != "" {
-			return strings.TrimSpace(s)
+			return unwrapPromptEnvelope(strings.TrimSpace(s))
 		}
 	}
 	if isTruncated(e) {
@@ -184,6 +184,32 @@ func promptText(e Event) string {
 		return "(prompt dropped by the trajectory size limit)"
 	}
 	return "(prompt unavailable)"
+}
+
+// unwrapPromptEnvelope reduces an OpenClaw-assembled prompt to the text the
+// sender actually wrote. OpenClaw 7.2 prepends runtime/workspace context and a
+// quoted <conversation_context> block, then marks the real input with a
+// "Current user request:" line; inter-session sends additionally lead with a
+// "[Inter-session message] ..." source header and a routing advisory sentence.
+// Unwrapping is gated on those exact markers at line starts so ordinary
+// prompts that merely mention the phrases pass through unchanged.
+func unwrapPromptEnvelope(s string) string {
+	const requestMarker = "Current user request:"
+	if idx := strings.LastIndex(s, "\n"+requestMarker); idx >= 0 {
+		s = strings.TrimSpace(s[idx+len(requestMarker)+1:])
+	} else if !strings.HasPrefix(s, "[Inter-session message]") {
+		return s
+	}
+	for {
+		line, rest, _ := strings.Cut(s, "\n")
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[Inter-session message]") ||
+			strings.HasPrefix(trimmed, "This content was routed by OpenClaw") {
+			s = strings.TrimSpace(rest)
+			continue
+		}
+		return s
+	}
 }
 
 func isErrorEvent(e Event) bool {

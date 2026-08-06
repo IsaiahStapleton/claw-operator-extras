@@ -52,14 +52,13 @@ type AgentView struct {
 
 // resolveMeta looks an agent up in its Claw's configured identities. An agent
 // the config does not name is shown by its raw ID: an honest label, where an
-// invented prettier one would misidentify it.
+// invented prettier one would misidentify it. Emoji stays empty when the
+// config has none; the UI renders the OpenClaw logo for that case, which a
+// server-side placeholder character would prevent.
 func resolveMeta(name string, meta map[string]AgentMeta) AgentMeta {
 	m := meta[name]
 	if m.Title == "" {
 		m.Title = name
-	}
-	if m.Emoji == "" {
-		m.Emoji = "🤖"
 	}
 	return m
 }
@@ -72,30 +71,45 @@ func parseAgentIdentities(raw []byte) map[string]AgentMeta {
 	if len(raw) == 0 {
 		return out
 	}
+	type agentIdentity struct {
+		Name     string `json:"name"`
+		Identity struct {
+			Name  string `json:"name"`
+			Emoji string `json:"emoji"`
+		} `json:"identity"`
+	}
 	var cfg struct {
 		Agents struct {
 			List []struct {
-				ID       string `json:"id"`
-				Name     string `json:"name"`
-				Identity struct {
-					Name  string `json:"name"`
-					Emoji string `json:"emoji"`
-				} `json:"identity"`
+				ID string `json:"id"`
+				agentIdentity
 			} `json:"list"`
+			// OpenClaw 2026.7.2 replaced the list array with a map keyed by
+			// agent id; both shapes remain in the wild.
+			Entries map[string]agentIdentity `json:"entries"`
 		} `json:"agents"`
 	}
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return out
 	}
-	for _, a := range cfg.Agents.List {
-		if a.ID == "" {
-			continue
-		}
+	meta := func(a agentIdentity) AgentMeta {
 		title := a.Identity.Name
 		if title == "" {
 			title = a.Name
 		}
-		out[a.ID] = AgentMeta{Title: title, Emoji: a.Identity.Emoji}
+		return AgentMeta{Title: title, Emoji: a.Identity.Emoji}
+	}
+	for _, a := range cfg.Agents.List {
+		if a.ID == "" {
+			continue
+		}
+		out[a.ID] = meta(a.agentIdentity)
+	}
+	for id, a := range cfg.Agents.Entries {
+		if id == "" {
+			continue
+		}
+		out[id] = meta(a)
 	}
 	return out
 }

@@ -764,3 +764,7 @@ a.md-wl:hover { text-decoration: underline; }
 .run-facts { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 0 12px 8px; font-size: 12px; color: var(--sub); }
 .run-facts b { color: var(--text); font-weight: 600; }
 .session-head { padding: 16px 32px 10px; border-bottom: 1px solid var(--border-soft); }
+
+/* Fallback agent mark: the OpenClaw logo standing in where an emoji would
+   render, sized in em so it follows the local font size. */
+.emoji-logo { height: 1em; width: 1em; vertical-align: -0.12em; }
