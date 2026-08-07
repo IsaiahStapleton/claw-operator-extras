@@ -38,10 +38,10 @@ func TestSafeCodexName(t *testing.T) {
 	cases := map[string]bool{
 		"agent/codex-home/sessions/2026/07/23/rollout-abc.jsonl": true,
 		"agent/codex-home/sessions/2026/08/06/file.jsonl":        true,
-		"sessions/file.jsonl":                                     false,
-		"agent/codex-home/sessions/../../etc/passwd":              false,
+		"sessions/file.jsonl":                                    false,
+		"agent/codex-home/sessions/../../etc/passwd":             false,
 		"agent/codex-home/sessions/2026/07/23/file with space":   false,
-		"":                                                        false,
+		"": false,
 	}
 	for input, want := range cases {
 		if got := safeCodexName(input); got != want {

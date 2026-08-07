@@ -209,9 +209,9 @@ func (s *Store) scan() *Snapshot {
 	// rather than one at a time.
 	fresh := map[string]bool{}
 	var toFetch []sessionFile
-	plan := map[string][]sessionFile{}            // agent -> trajectories to parse
+	plan := map[string][]sessionFile{} // agent -> trajectories to parse
 	transcriptsFor := map[string]map[string]sessionFile{}
-	codexPlan := map[string][]sessionFile{}        // agent -> codex files to parse
+	codexPlan := map[string][]sessionFile{} // agent -> codex files to parse
 
 	for agent, entries := range byAgent {
 		snap.Agents = append(snap.Agents, agent)
