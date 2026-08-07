@@ -325,3 +325,17 @@ func TestBareInterSessionHeaderIsStripped(t *testing.T) {
 		t.Fatalf("prompt = %q, want %q", got, "DELEG-TEST ping")
 	}
 }
+
+func TestUnwrapPromptEnvelopeFirstLine(t *testing.T) {
+	input := "Current user request:\nthe actual prompt"
+	if got := unwrapPromptEnvelope(input); got != "the actual prompt" {
+		t.Fatalf("got %q, want %q (marker on the first line must be recognized)", got, "the actual prompt")
+	}
+}
+
+func TestUnwrapPromptEnvelopeDoesNotMatchPartialLine(t *testing.T) {
+	input := "Note:\nCurrent user request: handling edge cases\nthe real prompt"
+	if got := unwrapPromptEnvelope(input); got != input {
+		t.Fatalf("got %q, want input unchanged (partial-line match must not trigger)", got)
+	}
+}

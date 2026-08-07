@@ -73,7 +73,7 @@ type codexTurn struct {
 // parseCodexSession derives runs and analysis events from a Codex CLI session
 // file. Runs are built directly from the Codex event model rather than routed
 // through deriveRuns, because the two formats have different granularity.
-func parseCodexSession(agent, sessionID, text string, now time.Time) ([]Run, []Event, int) {
+func parseCodexSession(agent, sessionID, text string, now time.Time) (string, []Run, []Event, int) {
 	var model, provider string
 	var currentTurn *codexTurn
 	var turns []*codexTurn
@@ -214,7 +214,7 @@ func parseCodexSession(agent, sessionID, text string, now time.Time) ([]Run, []E
 	sort.SliceStable(runs, func(i, j int) bool {
 		return tsMillis(runs[i].StartedAt) > tsMillis(runs[j].StartedAt)
 	})
-	return runs, events, badLines
+	return sessionID, runs, events, badLines
 }
 
 // parseCodexEvents maps Codex CLI JSONL into Events for the replay viewer.

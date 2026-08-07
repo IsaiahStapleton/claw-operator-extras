@@ -86,6 +86,7 @@ type parsedSession struct {
 	runs      []Run   // derived while the full events were still in hand
 	badLines  int
 	truncated int
+	sessionID string // resolved session ID (codex: from session_meta payload)
 }
 
 // Store turns a sessionSource into cached snapshots.
@@ -374,7 +375,6 @@ func (s *Store) scan() *Snapshot {
 	newCodexPaths := map[string]string{}
 	for agent, codexFiles := range codexPlan {
 		for _, f := range codexFiles {
-			sessionID := codexSessionID(f.Name)
 			key := batchKey(agent, f.Name)
 
 			cached, ok := s.parsed[key]
@@ -384,19 +384,19 @@ func (s *Store) scan() *Snapshot {
 					snap.UnreadableFiles++
 					continue
 				}
-				runs, events, bad := parseCodexSession(agent, sessionID, string(body), now)
+				resolvedID, runs, events, bad := parseCodexSession(agent, codexSessionID(f.Name), string(body), now)
 				cached = parsedSession{size: f.Size, modTime: f.ModTime,
-					events: events, runs: runs, badLines: bad}
+					sessionID: resolvedID, events: events, runs: runs, badLines: bad}
 				s.parsed[key] = cached
 			}
 
 			snap.ScannedFiles++
 			snap.BadLines += cached.badLines
 			snap.Sessions = append(snap.Sessions, Session{
-				Agent: agent, SessionID: sessionID, Events: cached.events,
+				Agent: agent, SessionID: cached.sessionID, Events: cached.events,
 			})
 			snap.Runs = append(snap.Runs, cached.runs...)
-			newCodexPaths[batchKey(agent, sessionID)] = f.Name
+			newCodexPaths[batchKey(agent, cached.sessionID)] = f.Name
 		}
 	}
 	s.mu.Lock()

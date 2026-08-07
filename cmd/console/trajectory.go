@@ -195,8 +195,15 @@ func promptText(e Event) string {
 // prompts that merely mention the phrases pass through unchanged.
 func unwrapPromptEnvelope(s string) string {
 	const requestMarker = "Current user request:"
-	if idx := strings.LastIndex(s, "\n"+requestMarker); idx >= 0 {
-		s = strings.TrimSpace(s[idx+len(requestMarker)+1:])
+	lines := strings.Split(s, "\n")
+	requestLine := -1
+	for i, line := range lines {
+		if strings.TrimRight(line, "\r") == requestMarker {
+			requestLine = i
+		}
+	}
+	if requestLine >= 0 {
+		s = strings.TrimSpace(strings.Join(lines[requestLine+1:], "\n"))
 	} else if !strings.HasPrefix(s, "[Inter-session message]") {
 		return s
 	}

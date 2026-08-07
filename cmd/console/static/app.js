@@ -17,7 +17,7 @@ rather than quietly dropped.
 // asset as the masthead logo) instead of a generic placeholder. The <img>
 // sizes in em units so it tracks the surrounding font wherever emojis appear.
 const LOGO_EMOJI = '<img class="emoji-logo" src="openclaw.svg" alt="OpenClaw">';
-const emojiHtml = (e) => e || LOGO_EMOJI;
+const emojiHtml = (e) => e ? esc(e) : LOGO_EMOJI;
 
 
 const $ = (sel) => document.querySelector(sel);
@@ -583,7 +583,7 @@ function renderToolbar(lockedAgent) {
     ? `<span class="locked-filter">Agent: <b>${esc(agentMeta(lockedAgent).title)}</b> 🔒</span>`
     : `<select class="field" data-act="filter-agent">
         <option value=""${!q.agent ? ' selected' : ''}>All agents</option>
-        ${state.agents.map((a) => `<option value="${esc(a.name)}"${q.agent === a.name ? ' selected' : ''}>${a.emoji ? a.emoji + ' ' : ''}${esc(a.title || a.name)}</option>`).join('')}
+        ${state.agents.map((a) => `<option value="${esc(a.name)}"${q.agent === a.name ? ' selected' : ''}>${a.emoji ? esc(a.emoji) + ' ' : ''}${esc(a.title || a.name)}</option>`).join('')}
        </select>`;
 
   const chips = ['ok', 'error', 'running', 'stale'].map((o) => {

@@ -54,9 +54,12 @@ func TestParseCodexSessionDerivesRunsAndTokens(t *testing.T) {
 	now := time.Now().UTC()
 	text := codexSessionLines("sess-abc", "turn-1", "deploy the stack", "gpt-5.6", "openai", now.Add(-5*time.Minute))
 
-	runs, events, badLines := parseCodexSession("default", "fallback-id", text, now)
+	resolvedID, runs, events, badLines := parseCodexSession("default", "fallback-id", text, now)
 	if badLines != 0 {
 		t.Fatalf("badLines = %d, want 0", badLines)
+	}
+	if resolvedID != "sess-abc" {
+		t.Fatalf("resolvedID = %q, want sess-abc (from session_meta, not the fallback)", resolvedID)
 	}
 	if len(runs) != 1 {
 		t.Fatalf("runs = %d, want 1", len(runs))
@@ -106,7 +109,7 @@ func TestParseCodexSessionUnfinishedRunMarkedRunning(t *testing.T) {
 		`{"timestamp":"` + iso(now.Add(-20*time.Second)) + `","type":"event_msg","payload":{"type":"user_message","message":"hello"}}`,
 		`{"timestamp":"` + iso(now.Add(-10*time.Second)) + `","type":"event_msg","payload":{"type":"agent_message","message":"thinking..."}}`,
 	}
-	runs, _, _ := parseCodexSession("main", "s1", strings.Join(lines, "\n"), now)
+	_, runs, _, _ := parseCodexSession("main", "s1", strings.Join(lines, "\n"), now)
 	if len(runs) != 1 {
 		t.Fatalf("runs = %d, want 1", len(runs))
 	}
@@ -174,6 +177,16 @@ func TestScanDiscoversCodexSessionFiles(t *testing.T) {
 	}
 	if !strings.Contains(codexRun.Prompt, "hello world") {
 		t.Fatalf("codex run prompt = %q, want it to contain the user message", codexRun.Prompt)
+	}
+
+	store := newStore(root, 0, nil)
+	_ = store.snapshot()
+	detail := store.sessionEvents("main", "codex-sess-1", 0, 100)
+	if detail == nil {
+		t.Fatal("sessionEvents must find the codex session by its resolved ID")
+	}
+	if detail.Source != "codex" {
+		t.Fatalf("source = %q, want codex", detail.Source)
 	}
 }
 
