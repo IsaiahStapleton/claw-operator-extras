@@ -173,6 +173,48 @@ func parseCodexSession(agent, sessionID, text string, now time.Time) (string, []
 					currentTurn.lastTS = ts
 				}
 			}
+
+		case "response_item":
+			if currentTurn == nil {
+				continue
+			}
+			subtype, _ := payload["type"].(string)
+			switch subtype {
+			case "function_call":
+				name, _ := payload["name"].(string)
+				currentTurn.messages++
+				currentTurn.lastTS = ts
+				if name != "" {
+					currentTurn.lastStep = clip(name, 160)
+				}
+			case "message":
+				role, _ := payload["role"].(string)
+				if role == "user" {
+					var text string
+					if content, ok := payload["content"].([]any); ok {
+						for _, c := range content {
+							if item, ok := c.(map[string]any); ok {
+								if t, ok := item["text"].(string); ok {
+									if text != "" {
+										text += "\n"
+									}
+									text += t
+								}
+							}
+						}
+					}
+					if currentTurn.prompt == "" && text != "" {
+						currentTurn.prompt = text
+					}
+					currentTurn.messages++
+					currentTurn.lastTS = ts
+					events = append(events, Event{
+						Type: "prompt.submitted", TS: ts,
+						RunID: currentTurn.runID,
+						Data:  map[string]any{"prompt": text},
+					})
+				}
+			}
 		}
 	}
 
@@ -296,6 +338,68 @@ func parseCodexEvents(text string) ([]Event, string, int) {
 					Type: "session.ended", TS: ts, Seq: seq,
 					RunID: currentRunID,
 				})
+			}
+
+		case "response_item":
+			subtype, _ := payload["type"].(string)
+			switch subtype {
+			case "function_call":
+				name, _ := payload["name"].(string)
+				argsRaw, _ := payload["arguments"].(string)
+				var args map[string]any
+				if argsRaw != "" {
+					_ = json.Unmarshal([]byte(argsRaw), &args)
+				}
+				if args == nil {
+					args = map[string]any{}
+				}
+				seq++
+				events = append(events, Event{
+					Type: "tool.call", TS: ts, Seq: seq,
+					RunID: currentRunID,
+					Data:  map[string]any{"name": name, "arguments": args},
+				})
+
+			case "function_call_output":
+				output, _ := payload["output"].(string)
+				seq++
+				events = append(events, Event{
+					Type: "tool.result", TS: ts, Seq: seq,
+					RunID: currentRunID,
+					Data: map[string]any{"result": output},
+				})
+
+			case "message":
+				role, _ := payload["role"].(string)
+				var text string
+				if content, ok := payload["content"].([]any); ok {
+					for _, c := range content {
+						if item, ok := c.(map[string]any); ok {
+							if t, ok := item["text"].(string); ok {
+								if text != "" {
+									text += "\n"
+								}
+								text += t
+							}
+						}
+					}
+				}
+				switch role {
+				case "user":
+					seq++
+					events = append(events, Event{
+						Type: "prompt.submitted", TS: ts, Seq: seq,
+						RunID: currentRunID,
+						Data:  map[string]any{"prompt": text},
+					})
+				case "assistant":
+					seq++
+					events = append(events, Event{
+						Type: "model.completed", TS: ts, Seq: seq,
+						RunID: currentRunID, ModelID: model, Provider: provider,
+						Data: map[string]any{"assistantTexts": []any{text}},
+					})
+				}
 			}
 		}
 	}

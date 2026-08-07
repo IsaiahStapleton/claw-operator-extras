@@ -144,6 +144,50 @@ func TestParseCodexEventsForReplay(t *testing.T) {
 	}
 }
 
+func TestParseCodexEventsIncludesResponseItems(t *testing.T) {
+	lines := []string{
+		`{"timestamp":"2026-08-06T20:00:58Z","type":"session_meta","payload":{"session_id":"s1","model_provider":"openai"}}`,
+		`{"timestamp":"2026-08-06T20:00:58Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`,
+		`{"timestamp":"2026-08-06T20:00:59Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"deploy the stack"}]}}`,
+		`{"timestamp":"2026-08-06T20:01:00Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"kubectl apply -f deploy.yaml\"}"}}`,
+		`{"timestamp":"2026-08-06T20:01:01Z","type":"response_item","payload":{"type":"function_call_output","output":"deployment created"}}`,
+		`{"timestamp":"2026-08-06T20:01:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done."}]}}`,
+		`{"timestamp":"2026-08-06T20:01:03Z","type":"event_msg","payload":{"type":"task_complete"}}`,
+	}
+	events, _, badLines := parseCodexEvents(strings.Join(lines, "\n"))
+	if badLines != 0 {
+		t.Fatalf("badLines = %d, want 0", badLines)
+	}
+	types := make([]string, len(events))
+	for i, e := range events {
+		types[i] = e.Type
+	}
+	want := []string{
+		"session.started",
+		"prompt.submitted",
+		"tool.call",
+		"tool.result",
+		"model.completed",
+		"session.ended",
+	}
+	if len(types) != len(want) {
+		t.Fatalf("event types = %v, want %v", types, want)
+	}
+	for i, w := range want {
+		if types[i] != w {
+			t.Fatalf("event[%d].Type = %q, want %q", i, types[i], w)
+		}
+	}
+	toolCall := events[2]
+	if name, _ := toolCall.Data["name"].(string); name != "exec_command" {
+		t.Fatalf("tool.call name = %q, want exec_command", name)
+	}
+	args, _ := toolCall.Data["arguments"].(map[string]any)
+	if cmd, _ := args["cmd"].(string); cmd != "kubectl apply -f deploy.yaml" {
+		t.Fatalf("tool.call cmd = %q, want the parsed argument", cmd)
+	}
+}
+
 func TestScanDiscoversCodexSessionFiles(t *testing.T) {
 	now := time.Now().UTC()
 	root := makeDataDir(t, map[string]map[string][]string{
