@@ -103,6 +103,9 @@ type Store struct {
 	// behind its exec round trips.
 	scanDone chan struct{}
 	parsed   map[string]parsedSession // "<agent>/<file>" -> parsed content
+	// codexPaths maps "agent/sessionID" to the codex file's Name field so the
+	// replay handler can find a codex session file by its session UUID.
+	codexPaths map[string]string
 	// watch remembers the last content seen per memory note so a change can be
 	// diffed into an actual write event. It is shared by every user viewing the
 	// same Claw and outlives this store, so the record survives a restart.
@@ -120,7 +123,7 @@ func newStoreFromSource(src sessionSource, cacheTTL time.Duration, excludeAgents
 		watch = newMemoryWatcher("")
 	}
 	return &Store{source: src, cacheTTL: cacheTTL, excluded: ex, now: time.Now,
-		parsed: map[string]parsedSession{}, watch: watch}
+		parsed: map[string]parsedSession{}, codexPaths: map[string]string{}, watch: watch}
 }
 
 // newStore keeps the local-directory constructor the tests and
@@ -206,22 +209,31 @@ func (s *Store) scan() *Snapshot {
 	// rather than one at a time.
 	fresh := map[string]bool{}
 	var toFetch []sessionFile
-	plan := map[string][]sessionFile{} // agent -> trajectories to parse
+	plan := map[string][]sessionFile{}            // agent -> trajectories to parse
 	transcriptsFor := map[string]map[string]sessionFile{}
+	codexPlan := map[string][]sessionFile{}        // agent -> codex files to parse
 
 	for agent, entries := range byAgent {
 		snap.Agents = append(snap.Agents, agent)
 
 		// Transcript mtimes are the backend-agnostic activity signal:
 		// CLI-harness backends emit no trajectory sidecar, so trajectories
-		// alone undercount agents that are alive. sessions.json is excluded —
+		// alone undercount agents that are alive. sessions.json is excluded --
 		// the gateway sweeps every registered agent's store at once, which is
 		// not activity by this agent.
 		var lastActivity int64
 		trajectoryIDs := map[string]bool{}
 		transcripts := map[string]sessionFile{}
 		var trajectories []sessionFile
+		var codexFiles []sessionFile
 		for _, f := range entries {
+			if f.Codex {
+				codexFiles = append(codexFiles, f)
+				if f.ModTime > lastActivity {
+					lastActivity = f.ModTime
+				}
+				continue
+			}
 			switch {
 			case strings.HasSuffix(f.Name, ".trajectory.jsonl"):
 				trajectoryIDs[strings.TrimSuffix(f.Name, ".trajectory.jsonl")] = true
@@ -269,6 +281,23 @@ func (s *Store) scan() *Snapshot {
 				}
 			} else {
 				toFetch = append(toFetch, f) // unparsed yet; may need recovery
+			}
+		}
+
+		// Codex CLI session files: newest first, capped independently.
+		sort.SliceStable(codexFiles, func(i, j int) bool {
+			return codexFiles[i].ModTime > codexFiles[j].ModTime
+		})
+		if len(codexFiles) > maxSessionsPerAgent {
+			snap.SkippedSessions += len(codexFiles) - maxSessionsPerAgent
+			codexFiles = codexFiles[:maxSessionsPerAgent]
+		}
+		codexPlan[agent] = codexFiles
+		for _, f := range codexFiles {
+			key := batchKey(agent, f.Name)
+			fresh[key] = true
+			if cached, ok := s.parsed[key]; !ok || cached.size != f.Size || cached.modTime != f.ModTime {
+				toFetch = append(toFetch, f)
 			}
 		}
 	}
@@ -339,6 +368,40 @@ func (s *Store) scan() *Snapshot {
 			}
 		}
 	}
+
+	// Process Codex CLI session files: each is self-contained with its own
+	// runs and analysis events, no trajectory/transcript pairing needed.
+	newCodexPaths := map[string]string{}
+	for agent, codexFiles := range codexPlan {
+		for _, f := range codexFiles {
+			sessionID := codexSessionID(f.Name)
+			key := batchKey(agent, f.Name)
+
+			cached, ok := s.parsed[key]
+			if !ok || cached.size != f.Size || cached.modTime != f.ModTime {
+				body, got := bodies[key]
+				if !got {
+					snap.UnreadableFiles++
+					continue
+				}
+				runs, events, bad := parseCodexSession(agent, sessionID, string(body), now)
+				cached = parsedSession{size: f.Size, modTime: f.ModTime,
+					events: events, runs: runs, badLines: bad}
+				s.parsed[key] = cached
+			}
+
+			snap.ScannedFiles++
+			snap.BadLines += cached.badLines
+			snap.Sessions = append(snap.Sessions, Session{
+				Agent: agent, SessionID: sessionID, Events: cached.events,
+			})
+			snap.Runs = append(snap.Runs, cached.runs...)
+			newCodexPaths[batchKey(agent, sessionID)] = f.Name
+		}
+	}
+	s.mu.Lock()
+	s.codexPaths = newCodexPaths
+	s.mu.Unlock()
 
 	// Drop cache entries for files that no longer exist so a long-lived
 	// console does not grow without bound.
@@ -570,18 +633,37 @@ type SessionDetail struct {
 	Total    int
 	BadLines int
 	Events   []Event
+	Source   string // "trajectory" or "codex"
 }
 
 // sessionEvents reads the raw events of one session (uncached; replay is an
 // explicit click). Returns nil if the session file doesn't exist.
 func (s *Store) sessionEvents(agent, sessionID string, offset, limit int) *SessionDetail {
 	text, ok := s.readSessionFile(agent, sessionID, ".trajectory.jsonl")
-	if !ok {
-		return nil
+	if ok {
+		events, badLines := parseTrajectory(text)
+		sortEvents(events)
+		return &SessionDetail{Total: len(events), BadLines: badLines, Events: slicePage(events, offset, limit), Source: "trajectory"}
 	}
-	events, badLines := parseTrajectory(text)
-	sortEvents(events)
-	return &SessionDetail{Total: len(events), BadLines: badLines, Events: slicePage(events, offset, limit)}
+	// Try Codex CLI format: the file path is stored during the scan.
+	s.mu.Lock()
+	codexName := s.codexPaths[batchKey(agent, sessionID)]
+	s.mu.Unlock()
+	if codexName != "" {
+		if !safeNameRE.MatchString(agent) {
+			return nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
+		defer cancel()
+		body, err := s.source.read(ctx, agent, codexName)
+		if err != nil {
+			return nil
+		}
+		events, _, badLines := parseCodexEvents(string(body))
+		sortEvents(events)
+		return &SessionDetail{Total: len(events), BadLines: badLines, Events: slicePage(events, offset, limit), Source: "codex"}
+	}
+	return nil
 }
 
 // TranscriptMessage is one replay row for plain-transcript sessions.

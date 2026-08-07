@@ -261,7 +261,7 @@ func (s *server) handleRunDetail(w http.ResponseWriter, r *http.Request, agent, 
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"agent": agent, "sessionId": sessionID, "total": detail.Total,
-			"badLines": detail.BadLines, "offset": offset, "source": "trajectory",
+			"badLines": detail.BadLines, "offset": offset, "source": detail.Source,
 			"parent": parent, "children": children, "run": run, "runs": runs,
 			"events": events,
 		})

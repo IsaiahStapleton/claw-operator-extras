@@ -130,6 +130,10 @@ type sessionFile struct {
 	Name    string
 	Size    int64
 	ModTime int64 // unix millis
+	// Codex is true for files discovered under the Codex CLI session layout
+	// (<agent>/agent/codex-home/sessions/YYYY/MM/DD/*.jsonl). Name carries the
+	// full sub-path from the agent directory so the file can be read back.
+	Codex bool
 }
 
 // sessionSource lists and reads one Claw's agent session files.
@@ -193,19 +197,39 @@ func (d dirSource) index(_ context.Context) ([]string, []sessionFile, []byte, er
 		}
 		agents = append(agents, a.Name())
 		entries, err := os.ReadDir(filepath.Join(d.root, a.Name(), "sessions"))
-		if err != nil {
-			continue // an agent directory without sessions/ is not an error
+		if err == nil {
+			for _, e := range entries {
+				info, err := e.Info()
+				if err != nil {
+					continue
+				}
+				out = append(out, sessionFile{
+					Agent: a.Name(), Name: e.Name(),
+					Size: info.Size(), ModTime: info.ModTime().UnixMilli(),
+				})
+			}
 		}
-		for _, e := range entries {
+		codexRoot := filepath.Join(d.root, a.Name(), "agent", "codex-home", "sessions")
+		agentDir := filepath.Join(d.root, a.Name())
+		_ = filepath.WalkDir(codexRoot, func(p string, e os.DirEntry, walkErr error) error {
+			if walkErr != nil || e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+				return nil
+			}
+			rel, err := filepath.Rel(agentDir, p)
+			if err != nil {
+				return nil
+			}
 			info, err := e.Info()
 			if err != nil {
-				continue
+				return nil
 			}
 			out = append(out, sessionFile{
-				Agent: a.Name(), Name: e.Name(),
+				Agent: a.Name(), Name: filepath.ToSlash(rel),
 				Size: info.Size(), ModTime: info.ModTime().UnixMilli(),
+				Codex: true,
 			})
-		}
+			return nil
+		})
 	}
 	home := filepath.Dir(strings.TrimSuffix(d.root, string(filepath.Separator)))
 	config, err := os.ReadFile(filepath.Join(home, "openclaw.json"))
@@ -281,10 +305,21 @@ func (d dirSource) readNotes(_ context.Context, notes []memoryNote) (map[string]
 }
 
 func (d dirSource) read(_ context.Context, agent, name string) ([]byte, error) {
-	if !safeNameRE.MatchString(agent) || !safeNameRE.MatchString(name) {
+	if !safeNameRE.MatchString(agent) {
 		return nil, os.ErrNotExist
 	}
-	file := filepath.Join(d.root, agent, "sessions", name)
+	var file string
+	if strings.Contains(name, "/") {
+		if !safeCodexName(name) {
+			return nil, os.ErrNotExist
+		}
+		file = filepath.Join(d.root, agent, filepath.FromSlash(name))
+	} else {
+		if !safeNameRE.MatchString(name) {
+			return nil, os.ErrNotExist
+		}
+		file = filepath.Join(d.root, agent, "sessions", name)
+	}
 	root, err := filepath.Abs(d.root)
 	if err != nil {
 		return nil, err
@@ -318,14 +353,14 @@ func (e execSource) describe() string {
 // trip, not the bytes, is what costs here.
 func (e execSource) index(ctx context.Context) ([]string, []sessionFile, []byte, error) {
 	dir := shellQuote(e.agentsDir)
-	// Three labelled sections in one round trip: the agent directories, the
-	// session files this console knows how to read, and the Claw's own config,
-	// from which agent display names are derived. %P is the path relative to
-	// the search root, giving "<agent>/sessions/<file>". The config is base64
-	// encoded onto a single line so its content cannot imitate index rows.
+	// Four labelled sections in one round trip: the agent directories, the
+	// old-format session files (F), the Codex CLI session files (X), and the
+	// Claw's own config. %P is the path relative to the search root.
 	script := "find " + dir + " -mindepth 1 -maxdepth 1 -type d -printf 'A\\t%P\\n' 2>/dev/null; " +
 		"find " + dir + " -mindepth 3 -maxdepth 3 -path '*/sessions/*' -type f -name '*.jsonl' " +
 		"-printf 'F\\t%P\\t%s\\t%T@\\n' 2>/dev/null; " +
+		"find " + dir + " -path '*/agent/codex-home/sessions/*' -type f -name '*.jsonl' " +
+		"-printf 'X\\t%P\\t%s\\t%T@\\n' 2>/dev/null; " +
 		"printf 'C\\t'; head -c " + strconv.Itoa(maxAgentConfigBytes) + " " +
 		shellQuote(e.clawHome()+"/openclaw.json") + " 2>/dev/null | base64 -w0; printf '\\n'; true"
 
@@ -347,15 +382,27 @@ func (e execSource) readMany(ctx context.Context, files []sessionFile) (map[stri
 		return out, nil
 	}
 
-	// Paths are relative to the agents dir so the tar entry names come back as
-	// "<agent>/sessions/<file>", which maps straight onto the batch key.
+	// Paths are relative to the agents dir. Old-format entries come back as
+	// "<agent>/sessions/<file>"; codex entries as
+	// "<agent>/agent/codex-home/sessions/YYYY/MM/DD/<file>".
 	args := []string{"tar", "cf", "-", "-C", e.agentsDir}
 	wanted := map[string]bool{}
 	for _, f := range files {
-		if !safeNameRE.MatchString(f.Agent) || !safeNameRE.MatchString(f.Name) {
+		if !safeNameRE.MatchString(f.Agent) {
 			continue
 		}
-		rel := f.Agent + "/sessions/" + f.Name
+		var rel string
+		if f.Codex {
+			if !safeCodexName(f.Name) {
+				continue
+			}
+			rel = f.Agent + "/" + f.Name
+		} else {
+			if !safeNameRE.MatchString(f.Name) {
+				continue
+			}
+			rel = f.Agent + "/sessions/" + f.Name
+		}
 		args = append(args, rel)
 		wanted[rel] = true
 	}
@@ -373,8 +420,6 @@ func (e execSource) readMany(ctx context.Context, files []sessionFile) (map[stri
 					return nil
 				}
 				if err != nil {
-					// A partial tar still yields the entries already read;
-					// the store treats missing files as unreadable and says so.
 					return nil
 				}
 				if hdr.Typeflag != tar.TypeReg || !wanted[hdr.Name] {
@@ -384,11 +429,24 @@ func (e execSource) readMany(ctx context.Context, files []sessionFile) (map[stri
 				if err != nil {
 					continue
 				}
-				agent, rest, ok := strings.Cut(hdr.Name, "/sessions/")
-				if !ok {
+				slashIdx := strings.IndexByte(hdr.Name, '/')
+				if slashIdx < 0 {
 					continue
 				}
-				out[batchKey(agent, rest)] = body
+				agent := hdr.Name[:slashIdx]
+				rest := hdr.Name[slashIdx+1:]
+				var name string
+				if strings.HasPrefix(rest, "sessions/") {
+					name = rest[len("sessions/"):]
+					if strings.Contains(name, "/") {
+						continue
+					}
+				} else if strings.HasPrefix(rest, "agent/codex-home/sessions/") {
+					name = rest
+				} else {
+					continue
+				}
+				out[batchKey(agent, name)] = body
 				if total += len(body); total >= maxBatchBytes {
 					return nil
 				}
@@ -464,12 +522,23 @@ func (e execSource) clawHome() string {
 }
 
 func (e execSource) read(ctx context.Context, agent, name string) ([]byte, error) {
-	if !safeNameRE.MatchString(agent) || !safeNameRE.MatchString(name) {
+	if !safeNameRE.MatchString(agent) {
 		return nil, os.ErrNotExist
 	}
-	path := e.agentsDir + "/" + agent + "/sessions/" + name
+	var filePath string
+	if strings.Contains(name, "/") {
+		if !safeCodexName(name) {
+			return nil, os.ErrNotExist
+		}
+		filePath = e.agentsDir + "/" + agent + "/" + name
+	} else {
+		if !safeNameRE.MatchString(name) {
+			return nil, os.ErrNotExist
+		}
+		filePath = e.agentsDir + "/" + agent + "/sessions/" + name
+	}
 	res, err := e.srv.execInPod(ctx, e.identity, e.namespace, e.pod, e.container,
-		[]string{"cat", path})
+		[]string{"cat", filePath})
 	if err != nil {
 		return nil, err
 	}
@@ -500,20 +569,17 @@ func parseIndexOutput(out string) ([]string, []sessionFile, []byte) {
 			}
 			continue
 		}
-		if len(parts) != 4 || parts[0] != "F" {
+		if len(parts) != 4 || (parts[0] != "F" && parts[0] != "X") {
 			continue
 		}
+		label := parts[0]
 		parts = parts[1:]
 		rel := parts[0]
-		agent, rest, ok := strings.Cut(rel, "/sessions/")
-		if !ok || agent == "" || rest == "" || strings.Contains(rest, "/") {
-			continue
-		}
+
 		size, err := strconv.ParseInt(parts[1], 10, 64)
 		if err != nil {
 			continue
 		}
-		// %T@ is seconds with a fractional part; milliseconds are enough.
 		secs, frac, _ := strings.Cut(parts[2], ".")
 		s, err := strconv.ParseInt(secs, 10, 64)
 		if err != nil {
@@ -525,7 +591,26 @@ func parseIndexOutput(out string) ([]string, []sessionFile, []byte) {
 				ms += f
 			}
 		}
-		files = append(files, sessionFile{Agent: agent, Name: rest, Size: size, ModTime: ms})
+
+		if label == "F" {
+			agent, rest, ok := strings.Cut(rel, "/sessions/")
+			if !ok || agent == "" || rest == "" || strings.Contains(rest, "/") {
+				continue
+			}
+			files = append(files, sessionFile{Agent: agent, Name: rest, Size: size, ModTime: ms})
+		} else {
+			// Codex CLI layout: <agent>/agent/codex-home/sessions/YYYY/MM/DD/<file>
+			slashIdx := strings.IndexByte(rel, '/')
+			if slashIdx < 1 {
+				continue
+			}
+			agent := rel[:slashIdx]
+			rest := rel[slashIdx+1:]
+			if !strings.HasPrefix(rest, "agent/codex-home/sessions/") {
+				continue
+			}
+			files = append(files, sessionFile{Agent: agent, Name: rest, Size: size, ModTime: ms, Codex: true})
+		}
 	}
 	return agents, files, config
 }

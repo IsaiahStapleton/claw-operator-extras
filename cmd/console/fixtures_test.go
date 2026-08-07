@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -133,6 +134,38 @@ func addFile(t *testing.T, root, agent, name, content string, mtime time.Time) s
 }
 
 func iso(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+
+// addCodexSession writes a Codex CLI session file at the expected nested path
+// under root/<agent>/agent/codex-home/sessions/YYYY/MM/DD/<filename>.
+func addCodexSession(t *testing.T, root, agent, filename, content string, mtime time.Time) {
+	t.Helper()
+	dir := filepath.Join(root, agent, "agent", "codex-home", "sessions",
+		mtime.UTC().Format("2006"), mtime.UTC().Format("01"), mtime.UTC().Format("02"))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	file := filepath.Join(dir, filename)
+	if err := os.WriteFile(file, []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.Chtimes(file, mtime, mtime); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+}
+
+// codexSessionLines builds minimal Codex CLI session JSONL with one turn.
+func codexSessionLines(sessionID, turnID, prompt, model, provider string, ts time.Time) string {
+	lines := []string{
+		`{"timestamp":"` + iso(ts) + `","type":"session_meta","payload":{"session_id":"` + sessionID + `","model_provider":"` + provider + `"}}`,
+		`{"timestamp":"` + iso(ts) + `","type":"event_msg","payload":{"type":"task_started","turn_id":"` + turnID + `"}}`,
+		`{"timestamp":"` + iso(ts) + `","type":"turn_context","payload":{"model":"` + model + `"}}`,
+		`{"timestamp":"` + iso(ts.Add(time.Second)) + `","type":"event_msg","payload":{"type":"user_message","message":"` + prompt + `"}}`,
+		`{"timestamp":"` + iso(ts.Add(2*time.Second)) + `","type":"event_msg","payload":{"type":"agent_message","message":"done"}}`,
+		`{"timestamp":"` + iso(ts.Add(3*time.Second)) + `","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":50,"cached_input_tokens":10},"total_token_usage":{"input_tokens":100,"output_tokens":50}}}}`,
+		`{"timestamp":"` + iso(ts.Add(4*time.Second)) + `","type":"event_msg","payload":{"type":"task_complete"}}`,
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
 
 // addNote writes a durable memory note beside the agents dir, mirroring
 // OpenClaw's layout: <claw-home>/workspace/memory/..., wiki, or an agent's own

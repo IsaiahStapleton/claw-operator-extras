@@ -81,17 +81,16 @@ func TestScanSkipsExcludedAgents(t *testing.T) {
 	}
 }
 
-// An agent whose sessions this console cannot read still exists. Claws run
-// different agent backends, and some (Codex, for one) store sessions in a
-// layout this console does not parse. Listing the agent with zero runs is
-// truthful; omitting it would imply the agent is not there.
+// An agent whose sessions contain no valid events still appears in the agent
+// list. Empty agent dirs and codex files with unparseable content both report
+// the agent without fabricating runs.
 func TestAgentWithoutReadableSessionsIsStillListed(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "empty-agent"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// A backend layout this console does not index: nested well below
-	// <agent>/sessions/<file>.
+	// A codex file with no valid events produces zero runs but the agent is
+	// still listed.
 	deep := filepath.Join(root, "codex-agent", "agent", "codex-home", "sessions", "2026", "07", "03")
 	if err := os.MkdirAll(deep, 0o755); err != nil {
 		t.Fatal(err)
@@ -108,7 +107,7 @@ func TestAgentWithoutReadableSessionsIsStillListed(t *testing.T) {
 		t.Fatalf("agents = %v, want both listed even with nothing readable", snap.Agents)
 	}
 	if len(snap.Runs) != 0 {
-		t.Fatalf("runs = %d, want 0 — no session was in a format this console reads", len(snap.Runs))
+		t.Fatalf("runs = %d, want 0 — the codex file has no valid events", len(snap.Runs))
 	}
 }
 
