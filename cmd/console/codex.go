@@ -366,7 +366,7 @@ func parseCodexEvents(text string) ([]Event, string, int) {
 				events = append(events, Event{
 					Type: "tool.result", TS: ts, Seq: seq,
 					RunID: currentRunID,
-					Data: map[string]any{"result": output},
+					Data:  map[string]any{"result": output},
 				})
 
 			case "message":
