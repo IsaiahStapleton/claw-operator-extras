@@ -230,3 +230,16 @@ func TestParseIndexOutputHandlesCodexLines(t *testing.T) {
 		t.Fatalf("codex size = %d, want 5000", codex.Size)
 	}
 }
+
+func TestParseIndexOutputRejectsUnsafeCodexPaths(t *testing.T) {
+	out := "X\tdefault/agent/codex-home/sessions/../../etc/passwd\t100\t1700000000.000\n" +
+		"X\t../escape/agent/codex-home/sessions/2026/07/23/file.jsonl\t100\t1700000000.000\n" +
+		"X\tdefault/agent/codex-home/sessions/2026/07/23/rollout-ok.jsonl\t100\t1700000000.000\n"
+	_, files, _ := parseIndexOutput(out)
+	if len(files) != 1 {
+		t.Fatalf("files = %d, want 1 (only the safe path should survive)", len(files))
+	}
+	if files[0].Name != "agent/codex-home/sessions/2026/07/23/rollout-ok.jsonl" {
+		t.Fatalf("surviving file = %+v, want the safe path", files[0])
+	}
+}

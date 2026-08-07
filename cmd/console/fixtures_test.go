@@ -155,11 +155,15 @@ func addCodexSession(t *testing.T, root, agent, filename, content string, mtime 
 
 // codexSessionLines builds minimal Codex CLI session JSONL with one turn.
 func codexSessionLines(sessionID, turnID, prompt, model, provider string, ts time.Time) string {
+	jsonStr := func(s string) string {
+		b, _ := json.Marshal(s)
+		return string(b[1 : len(b)-1])
+	}
 	lines := []string{
-		`{"timestamp":"` + iso(ts) + `","type":"session_meta","payload":{"session_id":"` + sessionID + `","model_provider":"` + provider + `"}}`,
-		`{"timestamp":"` + iso(ts) + `","type":"event_msg","payload":{"type":"task_started","turn_id":"` + turnID + `"}}`,
-		`{"timestamp":"` + iso(ts) + `","type":"turn_context","payload":{"model":"` + model + `"}}`,
-		`{"timestamp":"` + iso(ts.Add(time.Second)) + `","type":"event_msg","payload":{"type":"user_message","message":"` + prompt + `"}}`,
+		`{"timestamp":"` + iso(ts) + `","type":"session_meta","payload":{"session_id":"` + jsonStr(sessionID) + `","model_provider":"` + jsonStr(provider) + `"}}`,
+		`{"timestamp":"` + iso(ts) + `","type":"event_msg","payload":{"type":"task_started","turn_id":"` + jsonStr(turnID) + `"}}`,
+		`{"timestamp":"` + iso(ts) + `","type":"turn_context","payload":{"model":"` + jsonStr(model) + `"}}`,
+		`{"timestamp":"` + iso(ts.Add(time.Second)) + `","type":"event_msg","payload":{"type":"user_message","message":"` + jsonStr(prompt) + `"}}`,
 		`{"timestamp":"` + iso(ts.Add(2*time.Second)) + `","type":"event_msg","payload":{"type":"agent_message","message":"done"}}`,
 		`{"timestamp":"` + iso(ts.Add(3*time.Second)) + `","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":50,"cached_input_tokens":10},"total_token_usage":{"input_tokens":100,"output_tokens":50}}}}`,
 		`{"timestamp":"` + iso(ts.Add(4*time.Second)) + `","type":"event_msg","payload":{"type":"task_complete"}}`,

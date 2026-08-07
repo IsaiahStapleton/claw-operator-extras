@@ -359,7 +359,7 @@ func (e execSource) index(ctx context.Context) ([]string, []sessionFile, []byte,
 	script := "find " + dir + " -mindepth 1 -maxdepth 1 -type d -printf 'A\\t%P\\n' 2>/dev/null; " +
 		"find " + dir + " -mindepth 3 -maxdepth 3 -path '*/sessions/*' -type f -name '*.jsonl' " +
 		"-printf 'F\\t%P\\t%s\\t%T@\\n' 2>/dev/null; " +
-		"find " + dir + " -path '*/agent/codex-home/sessions/*' -type f -name '*.jsonl' " +
+		"find " + dir + " -mindepth 8 -maxdepth 8 -path '*/agent/codex-home/sessions/*' -type f -name '*.jsonl' " +
 		"-printf 'X\\t%P\\t%s\\t%T@\\n' 2>/dev/null; " +
 		"printf 'C\\t'; head -c " + strconv.Itoa(maxAgentConfigBytes) + " " +
 		shellQuote(e.clawHome()+"/openclaw.json") + " 2>/dev/null | base64 -w0; printf '\\n'; true"
@@ -606,7 +606,7 @@ func parseIndexOutput(out string) ([]string, []sessionFile, []byte) {
 			}
 			agent := rel[:slashIdx]
 			rest := rel[slashIdx+1:]
-			if !strings.HasPrefix(rest, "agent/codex-home/sessions/") {
+			if !safeNameRE.MatchString(agent) || !safeCodexName(rest) {
 				continue
 			}
 			files = append(files, sessionFile{Agent: agent, Name: rest, Size: size, ModTime: ms, Codex: true})
